@@ -1,0 +1,7 @@
+{
+  "name": "Gym-Locate: Geo-Intel Dashboard",
+  "description": "A geospatial intelligence tool for gym site selection in Bangalore, featuring rule-based suitability scoring and competitive gap analysis.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
