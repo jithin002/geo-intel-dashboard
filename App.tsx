@@ -5,11 +5,13 @@ import L from 'leaflet';
 import { HSR_CENTER, MOCK_LOCATIONS } from './constants';
 import { LocationType, ScoringMatrix } from './types';
 import { calculateSuitability } from './services/geoService';
-import { getSiteGuidance, GroundingSource, answerFreeform } from './services/geminiService';
+import { getSiteGuidance, GroundingSource, answerFreeform, conversationalQuery } from './services/geminiService';
 import './services/leaflet-heat'; // Local vendored version used
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, Tooltip } from 'recharts';
 import { getLocationIntelligence, generateDataDrivenRecommendation, PlaceResult, textSearch } from './services/placesAPIService';
 import { executeSearch, getQueryDescription } from './searchUtils';
+import { ChatInterface } from './components/ChatInterface';
+import { addMessage, loadConversationHistory, clearConversationHistory, getRecentContext, extractLocationMentions, Message } from './services/conversationService';
 
 /**
  * GYM-LOCATE: Geo-Intel Command Center (v8)
@@ -237,6 +239,11 @@ const App: React.FC = () => {
     const [searchResults, setSearchResults] = useState<any[]>([]);
     const [queryDescription, setQueryDescription] = useState<string>('');
 
+    // CHAT: Conversation state
+    const [chatOpen, setChatOpen] = useState(false);
+    const [conversationMessages, setConversationMessages] = useState<Message[]>([]);
+    const [isAITyping, setIsAITyping] = useState(false);
+
     // Render helper: display search results list
     const SearchResultsPanel = () => {
         if (!searchResults || searchResults.length === 0) return null;
@@ -442,6 +449,10 @@ const App: React.FC = () => {
                 setWardClusters(clusters);
             })
             .catch(err => console.error('Failed to load ward data:', err));
+
+        // Load conversation history
+        const savedMessages = loadConversationHistory();
+        setConversationMessages(savedMessages);
     }, []);
 
     useEffect(() => {
@@ -617,6 +628,152 @@ const App: React.FC = () => {
         if (scores.total > 40) return { text: "AVERAGE", color: "text-yellow-400" };
         return { text: "RISKY", color: "text-red-400" };
     };
+
+    // CHAT: Handle user messages
+    const handleUserMessage = useCallback(async (message: string) => {
+        // Add user message to conversation
+        const updatedMessages = addMessage(
+            conversationMessages,
+            'user',
+            message,
+            {
+                location: selectedPos || undefined,
+                wardName: selectedWard || undefined
+            }
+        );
+        setConversationMessages(updatedMessages);
+        setIsAITyping(true);
+
+        try {
+            // Check if message contains ward mentions
+            const mentions = extractLocationMentions(message, wardClusters);
+
+            // If user mentions a ward, navigate to it
+            if (mentions.length > 0) {
+                const mentionedWard = wardClusters.find(
+                    w => w.wardName.toLowerCase() === mentions[0].toLowerCase()
+                );
+                if (mentionedWard) {
+                    console.log(`📍 Navigating to mentioned ward: ${mentionedWard.wardName}`);
+                    setSelectedPos([mentionedWard.lat, mentionedWard.lng]);
+                    setSelectedCluster(mentionedWard.id);
+                    setSelectedWard(mentionedWard.wardName);
+                    setMapZoom(15);
+
+                    // Trigger analysis after short delay to allow state to update
+                    setTimeout(() => {
+                        performAnalysis();
+                    }, 300);
+                }
+            }
+
+            // Check if this is a search query (top X, high growth, etc.)
+            const isSearchQuery = message.toLowerCase().match(/top \d+|high growth|untapped|low competition|opportunity/);
+            if (isSearchQuery) {
+                const results = executeSearch(message, wardClusters, wardScores);
+                if (results.length > 0) {
+                    setSearchResults(results);
+                    const description = getQueryDescription(message);
+                    setQueryDescription(description);
+
+                    // Auto-zoom to first result if specific query
+                    if (results.length === 1) {
+                        const ward = results[0];
+                        setSelectedPos([ward.lat, ward.lng]);
+                        setSelectedCluster(ward.id);
+                        setSelectedWard(ward.wardName);
+                        setMapZoom(15);
+
+                        // Trigger analysis after state update
+                        setTimeout(() => {
+                            performAnalysis();
+                        }, 300);
+                    }
+
+                    // AI response for search
+                    let aiResponse = `I found ${results.length} area(s) matching your query.\n\n`;
+                    results.slice(0, 5).forEach((r, idx) => {
+                        const score = ((r.finalScore || r.opportunityScore || 0) * 100).toFixed(0);
+                        aiResponse += `${idx + 1}. **${r.wardName}** - Score: ${score}%\n`;
+                    });
+                    aiResponse += `\nClick on any area in the results panel to analyze it in detail.`;
+
+                    const finalMessages = addMessage(updatedMessages, 'assistant', aiResponse);
+                    setConversationMessages(finalMessages);
+                    setIsAITyping(false);
+                    return;
+                }
+            }
+
+            // Build context for conversational query
+            const recentContext = getRecentContext(updatedMessages).map(msg => ({
+                role: msg.role,
+                content: msg.content
+            }));
+
+            // Call conversational query
+            const response = await conversationalQuery(message, {
+                recentMessages: recentContext,
+                currentLocation: selectedPos || undefined,
+                selectedWard: selectedWard || undefined,
+                scores: scores || undefined,
+                realPOIs: realPOIs,
+                wardClusters
+            });
+
+            console.log(`💬 Conversational response (Gemini: ${response.usedGemini})`);
+
+            // Execute dashboard action if present
+            if (response.action) {
+                switch (response.action.type) {
+                    case 'navigate':
+                        if (response.action.payload.location) {
+                            setSelectedPos(response.action.payload.location);
+                            setMapZoom(response.action.payload.zoom || 15);
+                            // Trigger analysis after navigation
+                            setTimeout(() => {
+                                performAnalysis();
+                            }, 300);
+                        }
+                        break;
+                    case 'search':
+                        if (response.action.payload.query) {
+                            await handlePlaceSearch(response.action.payload.query);
+                        }
+                        break;
+                    case 'analyze':
+                        // Trigger analysis
+                        await performAnalysis();
+                        break;
+                    case 'zoom':
+                        if (response.action.payload.zoom) {
+                            setMapZoom(response.action.payload.zoom);
+                        }
+                        break;
+                }
+            }
+
+            // Add AI response to conversation
+            const finalMessages = addMessage(updatedMessages, 'assistant', response.response);
+            setConversationMessages(finalMessages);
+        } catch (error) {
+            console.error('Chat error:', error);
+            const errorMessages = addMessage(
+                updatedMessages,
+                'assistant',
+                'Sorry, I encountered an error. Please try again.'
+            );
+            setConversationMessages(errorMessages);
+        } finally {
+            setIsAITyping(false);
+        }
+    }, [conversationMessages, selectedPos, selectedWard, scores, realPOIs, wardClusters, wardScores]);
+
+    // Clear chat history
+    const handleClearChat = useCallback(() => {
+        clearConversationHistory();
+        setConversationMessages([]);
+    }, []);
 
     return (
         <div className="flex flex-col lg:flex-row h-[100dvh] w-full bg-slate-100 overflow-hidden font-sans">
@@ -879,7 +1036,7 @@ const App: React.FC = () => {
                 </MapContainer>
 
                 {/* Legend */}
-                <div className="absolute top-4 right-4 z-[1000] pointer-events-none hidden md:block">
+                <div className="absolute top-4 left-14 z-[1000] pointer-events-none hidden md:block">
                     <div className="glass-panel p-4 rounded-3xl shadow-2xl border border-white/80 w-48 pointer-events-auto">
                         <div className="text-[10px] font-black text-slate-800 mb-3 uppercase tracking-widest border-b pb-2">Ecosystem</div>
                         <div className="space-y-2">
@@ -895,6 +1052,10 @@ const App: React.FC = () => {
                             <div className="flex items-center gap-2">
                                 <img src="https://cdn-icons-png.flaticon.com/512/619/619032.png" className="w-4 h-4" alt="home" />
                                 <span className="text-[9px] text-slate-600 font-bold">High Density</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <img src="https://cdn-icons-png.flaticon.com/512/565/565350.png" className="w-4 h-4" alt="transit" />
+                                <span className="text-[9px] text-slate-600 font-bold">Transit</span>
                             </div>
                             <div className="border-t pt-2 mt-2">
                                 <div className="text-[9px] font-black text-slate-800 mb-2 uppercase tracking-widest">Ward Clusters ({wardClusters.length})</div>
@@ -1187,6 +1348,17 @@ const App: React.FC = () => {
                     </div>
                 </div>
             </div>
+
+            {/* Chat Interface */}
+            <ChatInterface
+                messages={conversationMessages}
+                onSendMessage={handleUserMessage}
+                onClearChat={handleClearChat}
+                isAITyping={isAITyping}
+                isOpen={chatOpen}
+                onToggle={() => setChatOpen(!chatOpen)}
+                selectedWard={selectedWard || undefined}
+            />
         </div>
     );
 };
