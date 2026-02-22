@@ -12,6 +12,7 @@ import { getLocationIntelligence, generateDataDrivenRecommendation, PlaceResult,
 import { executeSearch, getQueryDescription } from './searchUtils';
 import { ChatInterface } from './components/ChatInterface';
 import { addMessage, loadConversationHistory, clearConversationHistory, getRecentContext, extractLocationMentions, Message } from './services/conversationService';
+import { processUserQuery } from './services/chatOrchestrationService';
 
 /**
  * GYM-LOCATE: Geo-Intel Command Center (v8)
@@ -43,6 +44,10 @@ const residentialIcon = new L.Icon({
 const metroIcon = new L.Icon({
     iconUrl: 'https://cdn-icons-png.flaticon.com/512/565/565350.png', // Train
     iconSize: [20, 20],
+});
+const busIcon = new L.Icon({
+    iconUrl: 'https://cdn-icons-png.flaticon.com/512/1068/1068757.png', // Bus
+    iconSize: [18, 18],
 });
 
 const getIconForType = (type: LocationType) => {
@@ -485,55 +490,64 @@ const App: React.FC = () => {
             });
 
 
-            // Calculate scores based on REAL data
-            // UPDATED SCORING: Base scores + cafe proxy for better accuracy
-            // Weight distribution: Demographic 30%, Competitor 30%, Infrastructure 25%, Connectivity 15%
-            const realScores = {
-                // Demographic Load: Base + Corporate + Residential + Population Proxy
-                // Base score (15) ensures minimum display even with no POI data
-                demographicLoad: Math.min(100,
-                    15 +  // Base score (subjective minimum for any Bangalore area)
-                    (intel.corporateOffices.total * 6) +  // Corporate demand (primary)
-                    (intel.apartments.total * 4) +         // Residential demand (secondary)
-                    (intel.cafesRestaurants.total * 2)     // Population density proxy
-                ),
+            // ── SCORING V2: log1p + demand-competition coupling ──
+            const logNorm = (count: number, sat: number) =>
+                Math.log1p(count) / Math.log1p(sat) * 100;
+            const clampScore = (v: number) => Math.max(0, Math.min(100, v));
 
-                // Connectivity: Base + Metro + Bus transit (15% weight)
-                connectivity: Math.min(100,
-                    10 +  // Base (some connectivity in any city area)
-                    (intel.transitStations.total * 15)
-                ),
+            const gymCt = intel.gyms.total;
+            const aptCt = intel.apartments.total;
+            const corpCt = intel.corporateOffices.total;
+            const cafeCt = intel.cafesRestaurants.total;
 
-                // Competitor Ratio: Market gap analysis (30% weight)
-                competitorRatio: intel.marketGap === 'UNTAPPED' ? 100 :
-                    intel.marketGap === 'OPPORTUNITY' ? 75 :
-                        intel.marketGap === 'COMPETITIVE' ? 50 : 25,
+            // DEMAND (40%) — apartments lead, gyms erode up to 35%
+            const rawDemand = clampScore(
+                logNorm(aptCt, 40) * 0.55 +   // primary: residential density
+                logNorm(corpCt, 30) * 0.20 +   // reduced: noisy, false positives
+                logNorm(cafeCt, 30) * 0.25      // youth/lifestyle proxy
+            );
+            const gymPenalty = logNorm(gymCt, 15) / 100 * 0.35;
+            const demandScore = clampScore(rawDemand * (1 - gymPenalty));
 
-                // Infrastructure: Base + Cafes (25% weight)
-                infrastructure: Math.min(100,
-                    10 +  // Base score
-                    (intel.cafesRestaurants.total * 5)
-                ),
+            // MARKET GAP INDEX (30%) — demand-to-supply ratio, always shows a number
+            const demandUnits = aptCt + (corpCt * 0.8);
+            const gapRatio = demandUnits / Math.max(gymCt, 1);
+            const gapScore = clampScore(logNorm(gapRatio, 5)); // ratio 5:1 → ~100
 
-                total: 0
-            };
-
-            // Apply weights: 30% Demo, 30% Comp, 25% Infra, 15% Connect
-            realScores.total = Math.round(
-                realScores.demographicLoad * 0.30 +
-                realScores.connectivity * 0.15 +
-                realScores.competitorRatio * 0.30 +
-                realScores.infrastructure * 0.25
+            // VIBE (20%) — active lifestyle + entertainment signals
+            const vibeCt = (intel as any).vibe?.total ?? 0;
+            const vibeActive = (intel as any).vibe?.active ?? 0;
+            const vibeSocial = (intel as any).vibe?.entertainment ?? 0;
+            const vibeScore = clampScore(
+                logNorm(vibeActive, 6) * 0.55 +
+                logNorm(vibeSocial, 8) * 0.45
             );
 
-            console.log('📊 SCORING BREAKDOWN:');
-            console.log(`  Demographic: ${realScores.demographicLoad}/100 (${(realScores.demographicLoad * 0.30).toFixed(1)} weighted)`);
-            console.log(`  Connectivity: ${realScores.connectivity}/100 (${(realScores.connectivity * 0.15).toFixed(1)} weighted)`);
-            console.log(`  Competitor: ${realScores.competitorRatio}/100 (${(realScores.competitorRatio * 0.30).toFixed(1)} weighted)`);
-            console.log(`  Infrastructure: ${realScores.infrastructure}/100 (${(realScores.infrastructure * 0.25).toFixed(1)} weighted)`);
-            console.log(`  🎯 TOTAL SCORE: ${realScores.total}/100`);
+            // CONNECTIVITY (10%) — metro outweighs bus
+            const metroCt = intel.transitStations.places.filter((p: any) =>
+                p.types?.some((t: string) => t.includes('subway') || t.includes('light_rail'))
+            ).length;
+            const busCt = intel.transitStations.total - metroCt;
+            const connScore = clampScore(logNorm(metroCt, 5) * 0.65 + logNorm(busCt, 10) * 0.6 * 0.35);
+
+            const realScores = {
+                demographicLoad: Math.round(demandScore),
+                connectivity: Math.round(connScore),
+                competitorRatio: Math.round(gapScore),   // Gap Index (always non-zero if demand exists)
+                infrastructure: Math.round(vibeScore),
+                total: Math.round(demandScore * 0.30 + gapScore * 0.30 + vibeScore * 0.25 + connScore * 0.15)
+            };
+
+            console.log('📊 SCORING V2:', {
+                demand: `${realScores.demographicLoad}/100 (raw:${Math.round(rawDemand)} pen:${(gymPenalty * 100).toFixed(0)}%)`,
+                gap: `${realScores.competitorRatio}/100 (ratio:${gapRatio.toFixed(2)})`,
+                vibe: `${realScores.infrastructure}/100 (active:${vibeActive} social:${vibeSocial})`,
+                conn: `${realScores.connectivity}/100 (metro:${metroCt} bus:${busCt})`,
+                total: `${realScores.total}/100`
+            });
 
             setScores(realScores);
+
 
             // Calculate and store ward-specific scores if analyzing a cluster
             if (selectedCluster) {
@@ -570,9 +584,10 @@ const App: React.FC = () => {
                 console.log(`  Growth Rate: +${(growthRate * 100).toFixed(1)}%`);
             }
 
-            // Generate data-driven recommendation (no AI needed!)
-            const recommendation = generateDataDrivenRecommendation(intel);
+            // Generate data-driven recommendation backed by score breakdown
+            const recommendation = generateDataDrivenRecommendation(intel, realScores);
             setAiInsight(recommendation);
+
 
             setIsAnalyzing(false);
         } catch (error) {
@@ -629,7 +644,7 @@ const App: React.FC = () => {
         return { text: "RISKY", color: "text-red-400" };
     };
 
-    // CHAT: Handle user messages
+    // CHAT: Handle user messages with agentic orchestration
     const handleUserMessage = useCallback(async (message: string) => {
         // Add user message to conversation
         const updatedMessages = addMessage(
@@ -645,74 +660,20 @@ const App: React.FC = () => {
         setIsAITyping(true);
 
         try {
-            // Check if message contains ward mentions
-            const mentions = extractLocationMentions(message, wardClusters);
+            // ============================================
+            // AGENTIC FLOW: Use chat orchestration service
+            // ============================================
 
-            // If user mentions a ward, navigate to it
-            if (mentions.length > 0) {
-                const mentionedWard = wardClusters.find(
-                    w => w.wardName.toLowerCase() === mentions[0].toLowerCase()
-                );
-                if (mentionedWard) {
-                    console.log(`📍 Navigating to mentioned ward: ${mentionedWard.wardName}`);
-                    setSelectedPos([mentionedWard.lat, mentionedWard.lng]);
-                    setSelectedCluster(mentionedWard.id);
-                    setSelectedWard(mentionedWard.wardName);
-                    setMapZoom(15);
+            console.log('🚀 Starting agentic flow for:', message);
 
-                    // Trigger analysis after short delay to allow state to update
-                    setTimeout(() => {
-                        performAnalysis();
-                    }, 300);
-                }
-            }
-
-            // Check if this is a search query (top X, high growth, etc.)
-            const isSearchQuery = message.toLowerCase().match(/top \d+|high growth|untapped|low competition|opportunity/);
-            if (isSearchQuery) {
-                const results = executeSearch(message, wardClusters, wardScores);
-                if (results.length > 0) {
-                    setSearchResults(results);
-                    const description = getQueryDescription(message);
-                    setQueryDescription(description);
-
-                    // Auto-zoom to first result if specific query
-                    if (results.length === 1) {
-                        const ward = results[0];
-                        setSelectedPos([ward.lat, ward.lng]);
-                        setSelectedCluster(ward.id);
-                        setSelectedWard(ward.wardName);
-                        setMapZoom(15);
-
-                        // Trigger analysis after state update
-                        setTimeout(() => {
-                            performAnalysis();
-                        }, 300);
-                    }
-
-                    // AI response for search
-                    let aiResponse = `I found ${results.length} area(s) matching your query.\n\n`;
-                    results.slice(0, 5).forEach((r, idx) => {
-                        const score = ((r.finalScore || r.opportunityScore || 0) * 100).toFixed(0);
-                        aiResponse += `${idx + 1}. **${r.wardName}** - Score: ${score}%\n`;
-                    });
-                    aiResponse += `\nClick on any area in the results panel to analyze it in detail.`;
-
-                    const finalMessages = addMessage(updatedMessages, 'assistant', aiResponse);
-                    setConversationMessages(finalMessages);
-                    setIsAITyping(false);
-                    return;
-                }
-            }
-
-            // Build context for conversational query
+            // Build conversation context
             const recentContext = getRecentContext(updatedMessages).map(msg => ({
                 role: msg.role,
                 content: msg.content
             }));
 
-            // Call conversational query
-            const response = await conversationalQuery(message, {
+            // Call orchestration service (Gemini + Places API coordination)
+            const response = await processUserQuery(message, {
                 recentMessages: recentContext,
                 currentLocation: selectedPos || undefined,
                 selectedWard: selectedWard || undefined,
@@ -721,53 +682,69 @@ const App: React.FC = () => {
                 wardClusters
             });
 
-            console.log(`💬 Conversational response (Gemini: ${response.usedGemini})`);
+            console.log(`✅ Agentic response: Gemini=${response.usedGemini}, Places=${response.usedPlacesAPI}`);
 
-            // Execute dashboard action if present
-            if (response.action) {
-                switch (response.action.type) {
-                    case 'navigate':
-                        if (response.action.payload.location) {
-                            setSelectedPos(response.action.payload.location);
-                            setMapZoom(response.action.payload.zoom || 15);
-                            // Trigger analysis after navigation
-                            setTimeout(() => {
-                                performAnalysis();
-                            }, 300);
-                        }
-                        break;
-                    case 'search':
-                        if (response.action.payload.query) {
-                            await handlePlaceSearch(response.action.payload.query);
-                        }
-                        break;
+            // ============================================
+            // TRIGGER EXISTING FRAMEWORK FLOW
+            // Execute map actions (zoom, navigate, analyze)
+            // ============================================
+
+            if (response.mapAction) {
+                const action = response.mapAction;
+                console.log('🗺️ Executing map action:', action.type);
+
+                switch (action.type) {
                     case 'analyze':
-                        // Trigger analysis
-                        await performAnalysis();
-                        break;
-                    case 'zoom':
-                        if (response.action.payload.zoom) {
-                            setMapZoom(response.action.payload.zoom);
+                    case 'navigate':
+                        if (action.payload.location) {
+                            // Update map state
+                            setSelectedPos(action.payload.location);
+                            setMapZoom(action.payload.zoom || 15);
+
+                            if (action.payload.wardName) {
+                                setSelectedWard(action.payload.wardName);
+                            }
+
+                            // CRITICAL: Trigger existing analysis flow
+                            // This shows scores, markers, POIs - the full framework
+                            if (action.payload.triggerAnalysis) {
+                                console.log('🔍 Triggering performAnalysis() - existing framework flow');
+                                setTimeout(() => {
+                                    performAnalysis();
+                                }, 300);
+                            }
                         }
+                        break;
+
+                    case 'zoom':
+                        if (action.payload.zoom) {
+                            setMapZoom(action.payload.zoom);
+                        }
+                        break;
+
+                    case 'highlight':
+                        // Could highlight specific POI types in the future
+                        console.log('Highlighting:', action.payload.poiType);
                         break;
                 }
             }
 
             // Add AI response to conversation
-            const finalMessages = addMessage(updatedMessages, 'assistant', response.response);
+            const finalMessages = addMessage(updatedMessages, 'assistant', response.text);
             setConversationMessages(finalMessages);
+
         } catch (error) {
-            console.error('Chat error:', error);
+            console.error('❌ Agentic chat error:', error);
             const errorMessages = addMessage(
                 updatedMessages,
                 'assistant',
-                'Sorry, I encountered an error. Please try again.'
+                'Sorry, I encountered an error processing your request. Please try again.'
             );
             setConversationMessages(errorMessages);
         } finally {
             setIsAITyping(false);
         }
-    }, [conversationMessages, selectedPos, selectedWard, scores, realPOIs, wardClusters, wardScores]);
+    }, [conversationMessages, selectedPos, selectedWard, scores, realPOIs, wardClusters, performAnalysis]);
 
     // Clear chat history
     const handleClearChat = useCallback(() => {
@@ -907,17 +884,31 @@ const App: React.FC = () => {
                         </Marker>
                     ))}
 
-                    {selectedPos && realPOIs.transit.length > 0 && realPOIs.transit.map((station, idx) => (
-                        <Marker key={`transit-${idx}`} position={[station.location.lat, station.location.lng]} icon={metroIcon}>
-                            <Popup>
-                                <div className="p-2 min-w-[160px]">
-                                    <div className="font-black text-slate-800 text-sm mb-1">🚇 {station.displayName}</div>
-                                    <span className="text-[9px] font-bold text-white px-2 py-0.5 rounded-full uppercase tracking-widest bg-purple-500">TRANSIT</span>
-                                    {station.formattedAddress && <div className="mt-2 text-[9px] text-slate-500 italic border-t pt-1">{station.formattedAddress}</div>}
-                                </div>
-                            </Popup>
-                        </Marker>
-                    ))}
+                    {/* Transit Markers — split metro vs bus */}
+                    {selectedPos && realPOIs.transit.length > 0 && realPOIs.transit.map((station, idx) => {
+                        const isMetro = station.types?.some((t: string) =>
+                            t.includes('subway') || t.includes('light_rail')
+                        );
+                        const isBus = station.types?.some((t: string) => t.includes('bus'));
+                        // Fallback: if types is empty, infer from name
+                        const nameHint = station.displayName?.toLowerCase() || '';
+                        const isBusByName = !isMetro && (nameHint.includes('bus') || nameHint.includes('stop') || nameHint.includes('stand'));
+                        const icon = isMetro ? metroIcon : busIcon;
+                        const label = isMetro ? '🚇 METRO' : '🚌 BUS';
+                        const badgeColor = isMetro ? 'bg-purple-500' : 'bg-orange-500';
+                        return (
+                            <Marker key={`transit-${idx}`} position={[station.location.lat, station.location.lng]} icon={icon}>
+                                <Popup>
+                                    <div className="p-2 min-w-[160px]">
+                                        <div className="font-black text-slate-800 text-sm mb-1">{label.split(' ')[0]} {station.displayName}</div>
+                                        <span className={`text-[9px] font-bold text-white px-2 py-0.5 rounded-full uppercase tracking-widest ${badgeColor}`}>{label}</span>
+                                        {station.formattedAddress && <div className="mt-2 text-[9px] text-slate-500 italic border-t pt-1">{station.formattedAddress}</div>}
+                                    </div>
+                                </Popup>
+                            </Marker>
+                        );
+                    })}
+
 
                     {/* Ward Cluster Markers - Dynamically Loaded from CSV */}
                     {wardClusters.map(cluster => {
