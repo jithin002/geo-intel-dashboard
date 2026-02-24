@@ -300,7 +300,7 @@ const App: React.FC = () => {
         setSelectedPos([lat, lng]);
         setSelectedWard(wardName);
         setSelectedCluster(null);
-        setMapZoom(15); // Zoom in for analysis
+        setMapZoom(14); // Zoom in for analysis
     }, []);
 
     // NEW: Intelligent query search (supports natural language)
@@ -312,28 +312,14 @@ const App: React.FC = () => {
         }
 
         // Detect if the user input is a freeform question (natural language QA)
-        const isQuestion = /\?|^what\b|^where\b|^how\b|^is\b|^are\b|^who\b|^when\b|^which\b/i.test(query.trim());
+        const isQuestion = /\?|^what\b|^where\b|^how\b|^is\b|^are\b|^who\b|^when\b|^which\b|^tell\b|^show\b/i.test(query.trim());
+
         if (isQuestion) {
-            try {
-                setIsAnalyzing(true);
-                setAiInsight('Answering question...');
-
-                // Try to gather some context from Places first
-                const places = await textSearch(query);
-
-                // If selected position exists, pass it too
-                const [lat, lng] = selectedPos || [undefined, undefined];
-                const answer = await answerFreeform(query, lat as any, lng as any, places || []);
-
-                setAiInsight(answer);
-                setIsAnalyzing(false);
-                return;
-            } catch (err) {
-                console.error('AI question handling failed:', err);
-                setAiInsight('Failed to answer question.');
-                setIsAnalyzing(false);
-                return;
-            }
+            console.log("🗣️ Conversational query detected, routing to chat:", query);
+            setChatOpen(true);
+            setSearchQuery('');
+            handleUserMessage(query);
+            return;
         }
 
         try {
@@ -355,7 +341,7 @@ const App: React.FC = () => {
                     setSelectedPos([ward.lat, ward.lng]);
                     setSelectedCluster(ward.id);
                     setSelectedWard(null);
-                    setMapZoom(15);
+                    setMapZoom(14);
                 }
                 return;
             }
@@ -381,7 +367,7 @@ const App: React.FC = () => {
                 setSelectedPos([lat, lng]);
                 setSelectedCluster(null);
                 setSelectedWard(null);
-                setMapZoom(15);
+                setMapZoom(14);
                 setQueryDescription(`Found: ${place.display_name.split(',')[0]}`);
             } else {
                 // If Nominatim fails, try Google Places Text Search for richer data
@@ -395,7 +381,7 @@ const App: React.FC = () => {
                     const first = places[0];
                     if (first.location && first.location.lat && first.location.lng) {
                         setSelectedPos([first.location.lat, first.location.lng]);
-                        setMapZoom(15);
+                        setMapZoom(14);
                     }
                 } else {
                     setQueryDescription(`No results found for "${query}"`);
@@ -699,7 +685,7 @@ const App: React.FC = () => {
                         if (action.payload.location) {
                             // Update map state
                             setSelectedPos(action.payload.location);
-                            setMapZoom(action.payload.zoom || 15);
+                            setMapZoom(action.payload.zoom || 14);
 
                             if (action.payload.wardName) {
                                 setSelectedWard(action.payload.wardName);
@@ -752,11 +738,13 @@ const App: React.FC = () => {
         setConversationMessages([]);
     }, []);
 
-    return (
-        <div className="flex flex-col lg:flex-row h-[100dvh] w-full bg-slate-100 overflow-hidden font-sans">
+    const [showRightSidebar, setShowRightSidebar] = useState(true);
 
-            {/* 1. Map Interaction Area */}
-            <div className="order-1 lg:order-2 flex-1 relative h-[45vh] lg:h-full w-full">
+    return (
+        <div className="relative h-[100dvh] w-[100vw] bg-slate-100 overflow-hidden font-sans">
+
+            {/* 1. Full Screen Map Area */}
+            <div className="absolute inset-0 z-0">
                 <MapContainer center={[BANGALORE_CENTER.lat, BANGALORE_CENTER.lng]} zoom={mapZoom} className="z-10 h-full w-full">
                     <TileLayer
                         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -1027,43 +1015,41 @@ const App: React.FC = () => {
                 </MapContainer>
 
                 {/* Legend */}
-                <div className="absolute top-4 left-14 z-[1000] pointer-events-none hidden md:block">
-                    <div className="glass-panel p-4 rounded-3xl shadow-2xl border border-white/80 w-48 pointer-events-auto">
-                        <div className="text-[10px] font-black text-slate-800 mb-3 uppercase tracking-widest border-b pb-2">Ecosystem</div>
-                        <div className="space-y-2">
-                            <div className="flex items-center gap-2">
+                <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[40] pointer-events-none hidden md:block">
+                    <div className="bg-white/90 backdrop-blur-md px-4 py-2.5 rounded-[1.25rem] shadow-xl border border-white/80 pointer-events-auto flex items-center gap-4">
+                        <span className="text-[9px] font-black text-slate-800 uppercase tracking-widest border-r border-slate-200 pr-4">Legend</span>
+                        <div className="flex items-center gap-4">
+                            <div className="flex items-center gap-1.5" title="Competitor Gyms">
                                 <img src="https://cdn-icons-png.flaticon.com/512/2964/2964514.png" className="w-4 h-4" alt="gym" />
-                                <span className="text-[9px] text-slate-600 font-bold">Competitor</span>
+                                <span className="text-[9px] text-slate-600 font-bold">Gym</span>
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1.5" title="Corporate Offices">
                                 <img src="https://cdn-icons-png.flaticon.com/512/3061/3061341.png" className="w-4 h-4" alt="office" />
-                                <span className="text-[9px] text-slate-600 font-bold">Corporate</span>
+                                <span className="text-[9px] text-slate-600 font-bold">Office</span>
                             </div>
-
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1.5" title="Residential Zones">
                                 <img src="https://cdn-icons-png.flaticon.com/512/619/619032.png" className="w-4 h-4" alt="home" />
-                                <span className="text-[9px] text-slate-600 font-bold">High Density</span>
+                                <span className="text-[9px] text-slate-600 font-bold">Residential</span>
                             </div>
-                            <div className="flex items-center gap-2">
-                                <img src="https://cdn-icons-png.flaticon.com/512/565/565350.png" className="w-4 h-4" alt="transit" />
-                                <span className="text-[9px] text-slate-600 font-bold">Transit</span>
+                            <div className="flex items-center gap-1.5" title="Metro Stations">
+                                <img src="https://cdn-icons-png.flaticon.com/512/565/565350.png" className="w-4 h-4" alt="metro" />
+                                <span className="text-[9px] text-slate-600 font-bold">Metro</span>
                             </div>
-                            <div className="border-t pt-2 mt-2">
-                                <div className="text-[9px] font-black text-slate-800 mb-2 uppercase tracking-widest">Ward Clusters ({wardClusters.length})</div>
-                                <div className="space-y-1">
-                                    <div className="flex items-center gap-2">
-                                        <div className="w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center text-[8px]">🎯</div>
-                                        <span className="text-[9px] text-slate-600 font-bold">High Score</span>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <div className="w-4 h-4 rounded-full bg-amber-500 flex items-center justify-center text-[8px]">🎯</div>
-                                        <span className="text-[9px] text-slate-600 font-bold">Medium Score</span>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <div className="w-4 h-4 rounded-full bg-red-500 flex items-center justify-center text-[8px]">🎯</div>
-                                        <span className="text-[9px] text-slate-600 font-bold">Low Score</span>
-                                    </div>
-                                </div>
+                            <div className="flex items-center gap-1.5" title="Bus Stops">
+                                <img src="https://cdn-icons-png.flaticon.com/512/3448/3448339.png" className="w-4 h-4" alt="bus" />
+                                <span className="text-[9px] text-slate-600 font-bold">Bus</span>
+                            </div>
+                            <div className="flex items-center gap-1.5 border-l border-slate-200 pl-4 ml-1">
+                                <div className="w-3 h-3 rounded-full bg-emerald-500 shadow-sm border border-emerald-600"></div>
+                                <span className="text-[9px] text-slate-600 font-bold">High Score</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                                <div className="w-3 h-3 rounded-full bg-amber-500 shadow-sm border border-amber-600"></div>
+                                <span className="text-[9px] text-slate-600 font-bold">Avg</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                                <div className="w-3 h-3 rounded-full bg-red-500 shadow-sm border border-red-600"></div>
+                                <span className="text-[9px] text-slate-600 font-bold">Low</span>
                             </div>
                         </div>
                     </div>
@@ -1080,158 +1066,156 @@ const App: React.FC = () => {
                 </div>
             </div>
 
-            {/* 2. Sidebar Control Panel */}
-            <div className="order-2 lg:order-1 w-full lg:w-[440px] h-[55vh] lg:h-full bg-white shadow-2xl flex flex-col z-20 p-4 md:p-6 overflow-y-auto custom-scrollbar border-t lg:border-t-0 lg:border-r border-slate-200">
-                <header className="mb-6 flex items-center justify-between">
-                    <div>
-                        <h1 className="text-xl lg:text-2xl font-black text-slate-900 tracking-tight flex items-center gap-1">
-                            Geo-Intel <span className="bg-indigo-600 text-white px-2 py-0.5 rounded-lg text-xs lg:text-sm">V8 PRO</span>
-                        </h1>
-                        <p className="text-[9px] lg:text-[11px] font-bold text-slate-400 uppercase tracking-widest mt-1">Multi-POI Analysis</p>
-                        {(selectedCluster || selectedWard) && (
-                            <div className="mt-2 inline-flex items-center gap-1.5 bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-200 px-3 py-1.5 rounded-full">
-                                <span className="text-[10px] font-black text-indigo-700">
-                                    📍 {selectedWard || wardClusters.find(c => c.id === selectedCluster)?.wardName}
-                                </span>
-                            </div>
-                        )}
-                    </div>
-                    <button
-                        onClick={() => setShowHeatmap(!showHeatmap)}
-                        className={`p-2.5 rounded-xl transition-all border ${showHeatmap ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-50 text-slate-400 border-slate-200'}`}
-                    >
-                        <svg className="w-5 h-5 lg:w-6 lg:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" /></svg>
-                    </button>
-                </header>
+            {/* ========================================== */}
+            {/* FLOATING UI ELEMENTS OVER THE MAP          */}
+            {/* ========================================== */}
 
-                <div className="space-y-6">
-                    {/* Intelligent Query Search */}
-                    <div>
-                        <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Ward Intelligence</div>
-                        <div className="flex gap-2">
+            {/* TOP BAR: Title & Search (Dynamic & Floating) */}
+            <div className={`absolute top-4 z-30 w-[90vw] md:w-[600px] flex flex-col gap-2 pointer-events-none transition-all duration-500 ease-in-out ${showRightSidebar ? 'left-[calc(50%+160px)] -translate-x-1/2' : 'left-1/2 -translate-x-1/2'}`}>
+                {/* Search Bar Container */}
+                <div className="backdrop-blur-xl bg-white/80 shadow-2xl border border-white/50 rounded-2xl p-3 flex flex-col pointer-events-auto transition-all">
+                    <div className="flex items-center justify-between gap-3">
+                        {/* Brand / Logo Area */}
+                        <div className="flex-shrink-0 flex items-center gap-2">
+                            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-600 to-purple-600 flex items-center justify-center text-white font-black shadow-lg">G</div>
+                            <div className="hidden sm:block">
+                                <h1 className="text-sm font-black text-slate-900 tracking-tight leading-none">Geo-Intel <span className="text-indigo-600">V8</span></h1>
+                            </div>
+                        </div>
+
+                        {/* Search Input */}
+                        <div className="flex-1 relative">
                             <input
                                 type="text"
                                 placeholder='Try: "top 3 spots" or "low competition"'
                                 value={searchQuery}
                                 onChange={(e) => setSearchQuery(e.target.value)}
                                 onKeyPress={(e) => {
-                                    if (e.key === 'Enter') {
-                                        handlePlaceSearch(searchQuery.trim());
-                                    }
+                                    if (e.key === 'Enter') handlePlaceSearch(searchQuery.trim());
                                 }}
-                                className="flex-1 px-4 py-2.5 text-sm font-bold text-slate-700 bg-white border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:outline-none transition-all placeholder:text-slate-400 placeholder:font-normal"
+                                className="w-full px-4 py-2 text-sm font-bold text-slate-700 bg-white/50 border border-slate-200 rounded-xl focus:border-indigo-500 focus:bg-white focus:outline-none transition-all placeholder:text-slate-400 placeholder:font-normal shadow-inner"
                             />
                             <button
                                 onClick={() => handlePlaceSearch(searchQuery.trim())}
-                                className="px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-sm font-black rounded-xl hover:shadow-lg transition-all uppercase tracking-wider"
+                                className="absolute right-1 top-1 bottom-1 px-3 bg-indigo-600 text-white text-xs font-black rounded-lg hover:shadow-lg transition-all"
                             >
                                 🔍
                             </button>
                         </div>
-                        <div className="mt-1.5 text-[9px] text-slate-400 font-medium px-1">
-                            Try: "top 5", "high growth", "untapped", "low competition"
-                        </div>
                     </div>
+                </div>
 
-                    {/* Search Results Display */}
-                    {searchResults.length > 0 && (
-                        <div className="animate-in slide-in-from-top-2 duration-300 mb-4">
-                            <div className="flex justify-between items-center mb-2 px-1 border-b border-slate-100 pb-2">
-                                <span className="text-[10px] font-black text-slate-700 uppercase tracking-widest">{queryDescription}</span>
-                                <button
-                                    onClick={() => { setSearchResults([]); setSearchQuery(''); }}
-                                    className="text-[9px] text-slate-400 hover:text-red-500 font-bold transition-colors"
-                                >
-                                    CLEAR
-                                </button>
-                            </div>
-                            <div className="space-y-2 max-h-[220px] overflow-y-auto custom-scrollbar pr-1">
-                                {searchResults.map((item, idx) => {
-                                    // If this looks like a Google Place result, render place card
-                                    if (item && (item.displayName || item.formattedAddress || item.location)) {
-                                        const name = item.displayName?.text || item.displayName || item.display_name || item.id || `Place ${idx}`;
-                                        const rating = item.rating;
-                                        const address = item.formattedAddress || item.formatted_address || '';
-
-                                        return (
-                                            <div
-                                                key={item.id || idx}
-                                                className="group flex justify-between items-center p-3 bg-white border border-slate-100 rounded-xl hover:border-indigo-500 hover:shadow-lg transition-all cursor-pointer relative overflow-hidden"
-                                            >
-                                                <div className="pl-2" onClick={() => {
-                                                    if (item.location && item.location.lat && item.location.lng) {
-                                                        setSelectedPos([item.location.lat, item.location.lng]);
-                                                        setMapZoom(16);
-                                                    }
-                                                }}>
-                                                    <div className="font-bold text-slate-800 text-xs group-hover:text-indigo-700 transition-colors">{name}</div>
-                                                    {address && <div className="text-[9px] text-slate-400 font-medium mt-0.5">{address}</div>}
-                                                </div>
-                                                <div className="flex flex-col items-end gap-2">
-                                                    {rating ? (
-                                                        <div className="text-[10px] font-black text-slate-700">{rating.toFixed(1)} ★</div>
-                                                    ) : (
-                                                        <div className="text-[9px] text-slate-400">No rating</div>
-                                                    )}
-                                                    <div className="flex gap-2">
-                                                        <button onClick={() => {
-                                                            if (item.location && item.location.lat && item.location.lng) {
-                                                                setSelectedPos([item.location.lat, item.location.lng]);
-                                                                setMapZoom(16);
-                                                            }
-                                                        }} className="px-3 py-1 text-[10px] font-black bg-indigo-50 text-indigo-700 rounded-lg border border-indigo-100">Center</button>
-                                                        <button onClick={() => {
-                                                            // Trigger full analysis by setting selectedPos and keeping cluster null
-                                                            if (item.location && item.location.lat && item.location.lng) {
-                                                                setSelectedPos([item.location.lat, item.location.lng]);
-                                                                setSelectedCluster(null);
-                                                                setSelectedWard(null);
-                                                                setMapZoom(16);
-                                                            }
-                                                        }} className="px-3 py-1 text-[10px] font-black bg-emerald-50 text-emerald-700 rounded-lg border border-emerald-100">Analyze</button>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        );
-                                    }
-
-                                    // Fallback: treat as ward/cluster-like result
-                                    const ward = item as any;
-                                    const scoreVal = ward.finalScore || ward.opportunityScore || 0;
-                                    const scorePercentage = (scoreVal * 100).toFixed(1);
-                                    let scoreColorClass = 'bg-slate-100 text-slate-600 border-slate-200';
-                                    if (scoreVal > 0.8) scoreColorClass = 'bg-emerald-50 text-emerald-700 border-emerald-200';
-                                    else if (scoreVal > 0.6) scoreColorClass = 'bg-indigo-50 text-indigo-700 border-indigo-200';
-                                    else if (scoreVal > 0.4) scoreColorClass = 'bg-amber-50 text-amber-700 border-amber-200';
-                                    else scoreColorClass = 'bg-red-50 text-red-700 border-red-200';
-
+                {/* Search Results Dropdown */}
+                {searchResults.length > 0 && (
+                    <div className="backdrop-blur-xl bg-white/95 shadow-2xl border border-white/50 rounded-2xl p-3 pointer-events-auto animate-in slide-in-from-top-2 duration-300">
+                        <div className="flex justify-between items-center mb-2 px-1 border-b border-slate-100 pb-2">
+                            <span className="text-[10px] font-black text-slate-700 uppercase tracking-widest">{queryDescription}</span>
+                            <button onClick={() => { setSearchResults([]); setSearchQuery(''); }} className="text-[9px] text-slate-400 hover:text-red-500 font-bold transition-colors">CLEAR</button>
+                        </div>
+                        <div className="space-y-2 max-h-[40vh] overflow-y-auto custom-scrollbar pr-1">
+                            {/* Re-using exact same search result mapping logic */}
+                            {searchResults.map((item, idx) => {
+                                // If this looks like a Google Place result, render place card
+                                if (item && (item.displayName || item.formattedAddress || item.location)) {
+                                    const name = item.displayName?.text || item.displayName || item.display_name || item.id || `Place ${idx}`;
+                                    const rating = item.rating;
+                                    const address = item.formattedAddress || item.formatted_address || '';
                                     return (
-                                        <div
-                                            key={ward.id || idx}
-                                            onClick={() => handleClusterClick(ward.id, ward.lat, ward.lng)}
-                                            className="group flex justify-between items-center p-3 bg-white border border-slate-100 rounded-xl hover:border-indigo-500 hover:shadow-lg transition-all cursor-pointer relative overflow-hidden"
-                                        >
-                                            <div className="absolute left-0 top-0 bottom-0 w-1 bg-transparent group-hover:bg-indigo-500 transition-colors"></div>
-                                            <div className="pl-2">
-                                                <div className="font-bold text-slate-800 text-xs group-hover:text-indigo-700 transition-colors">{ward.wardName}</div>
-                                                <div className="text-[9px] text-slate-400 font-medium mt-0.5 flex items-center gap-1">
-                                                    <span>ID: {ward.wardId}</span>
-                                                    {ward.growthRate > 0 && (
-                                                        <span className="text-emerald-600 font-bold bg-emerald-50 px-1 rounded">
-                                                            Growth: +{(ward.growthRate * 100).toFixed(0)}%
-                                                        </span>
-                                                    )}
-                                                </div>
+                                        <div key={item.id || idx} className="group flex justify-between items-center p-3 bg-white border border-slate-100 rounded-xl hover:border-indigo-500 hover:shadow-lg transition-all cursor-pointer relative overflow-hidden">
+                                            <div className="pl-2" onClick={() => {
+                                                if (item.location && item.location.lat && item.location.lng) {
+                                                    setSelectedPos([item.location.lat, item.location.lng]);
+                                                    setMapZoom(16);
+                                                }
+                                            }}>
+                                                <div className="font-bold text-slate-800 text-xs group-hover:text-indigo-700 transition-colors">{name}</div>
+                                                {address && <div className="text-[9px] text-slate-400 font-medium mt-0.5">{address}</div>}
                                             </div>
-                                            <div className={`px-2 py-1.5 rounded-lg border text-[10px] font-black ${scoreColorClass} shadow-sm`}>
-                                                {scorePercentage}%
+                                            <div className="flex flex-col items-end gap-2">
+                                                {rating ? <div className="text-[10px] font-black text-slate-700">{rating.toFixed(1)} ★</div> : <div className="text-[9px] text-slate-400">No rating</div>}
+                                                <div className="flex gap-2">
+                                                    <button onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        if (item.location && item.location.lat && item.location.lng) {
+                                                            setSelectedPos([item.location.lat, item.location.lng]);
+                                                            setMapZoom(14);
+                                                        }
+                                                    }} className="px-3 py-1 text-[10px] font-black bg-indigo-50 text-indigo-700 rounded-lg border border-indigo-100">Center</button>
+                                                    <button onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        if (item.location && item.location.lat && item.location.lng) {
+                                                            setSelectedPos([item.location.lat, item.location.lng]);
+                                                            setSelectedCluster(null);
+                                                            setSelectedWard(null);
+                                                            setMapZoom(14);
+                                                        }
+                                                    }} className="px-3 py-1 text-[10px] font-black bg-emerald-50 text-emerald-700 rounded-lg border border-emerald-100">Analyze</button>
+                                                </div>
                                             </div>
                                         </div>
                                     );
-                                })}
-                            </div>
+                                }
+                                // Fallback map for internal clusters
+                                const ward = item as any;
+                                const scoreVal = ward.finalScore || ward.opportunityScore || 0;
+                                const scorePercentage = (scoreVal * 100).toFixed(1);
+                                let scoreColorClass = 'bg-slate-100 text-slate-600 border-slate-200';
+                                if (scoreVal > 0.8) scoreColorClass = 'bg-emerald-50 text-emerald-700 border-emerald-200';
+                                else if (scoreVal > 0.6) scoreColorClass = 'bg-indigo-50 text-indigo-700 border-indigo-200';
+                                else if (scoreVal > 0.4) scoreColorClass = 'bg-amber-50 text-amber-700 border-amber-200';
+                                else scoreColorClass = 'bg-red-50 text-red-700 border-red-200';
+                                return (
+                                    <div key={ward.id || idx} onClick={() => handleClusterClick(ward.id, ward.lat, ward.lng)} className="group flex justify-between items-center p-3 bg-white border border-slate-100 rounded-xl hover:border-indigo-500 hover:shadow-lg transition-all cursor-pointer relative overflow-hidden">
+                                        <div className="absolute left-0 top-0 bottom-0 w-1 bg-transparent group-hover:bg-indigo-500 transition-colors"></div>
+                                        <div className="pl-2">
+                                            <div className="font-bold text-slate-800 text-xs group-hover:text-indigo-700 transition-colors">{ward.wardName}</div>
+                                            <div className="text-[9px] text-slate-400 font-medium mt-0.5 flex items-center gap-1">
+                                                <span>ID: {ward.wardId}</span>
+                                                {ward.growthRate > 0 && <span className="text-emerald-600 font-bold bg-emerald-50 px-1 rounded">Growth: +{(ward.growthRate * 100).toFixed(0)}%</span>}
+                                            </div>
+                                        </div>
+                                        <div className={`px-2 py-1.5 rounded-lg border text-[10px] font-black ${scoreColorClass} shadow-sm`}>{scorePercentage}%</div>
+                                    </div>
+                                );
+                            })}
                         </div>
-                    )}
+                    </div>
+                )}
+            </div>
+
+            {/* LEFT SIDEBAR: Intelligence Panel */}
+            <div className={`absolute left-0 top-0 bottom-0 w-[320px] max-w-[90vw] z-[40] transition-transform duration-500 ease-in-out flex flex-col pointer-events-none ${showRightSidebar ? 'translate-x-0' : '-translate-x-full'}`}>
+                {/* Toggle Button for Right Sidebar (attached to the edge) */}
+                <button
+                    onClick={() => setShowRightSidebar(!showRightSidebar)}
+                    className="absolute -right-10 top-1/2 -translate-y-1/2 bg-white/95 backdrop-blur pointer-events-auto p-1.5 rounded-r-xl shadow-[5px_0_15px_rgba(0,0,0,0.1)] border border-l-0 border-slate-200 text-slate-600 hover:text-indigo-600 transition-colors z-50 flex items-center justify-center"
+                >
+                    <svg className={`w-5 h-5 transition-transform ${showRightSidebar ? '' : 'rotate-180'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
+                    </svg>
+                </button>
+
+                {/* Sidebar Content Container */}
+                <div className="flex-1 bg-white/95 backdrop-blur-2xl shadow-[10px_0_30px_rgba(0,0,0,0.1)] rounded-r-[2rem] border-r border-slate-200/60 p-5 overflow-y-auto custom-scrollbar pointer-events-auto flex flex-col gap-5">
+                    <header className="flex items-center justify-between pb-3 border-b border-slate-200/50 pt-2">
+                        <div>
+                            <h2 className="text-lg font-black text-slate-900 tracking-tight">Intelligence Panel</h2>
+                            {(selectedCluster || selectedWard) ? (
+                                <div className="mt-1 inline-flex items-center gap-1.5 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-md">
+                                    <span className="text-[10px] font-black text-indigo-700">📍 {selectedWard || wardClusters.find(c => c.id === selectedCluster)?.wardName}</span>
+                                </div>
+                            ) : (
+                                <p className="text-[10px] font-bold text-slate-400 mt-1">Select an area to analyze</p>
+                            )}
+                        </div>
+                        <button onClick={() => setShowHeatmap(!showHeatmap)} className={`p-2 rounded-xl transition-all border ${showHeatmap ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-100 text-slate-400 border-slate-200'}`} title="Toggle Heatmap">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" /></svg>
+                        </button>
+                    </header>
+
+
+
+
 
                     {/* Radius Selector */}
                     <div>
@@ -1253,7 +1237,7 @@ const App: React.FC = () => {
                     </div>
 
                     {/* Suitability Index Card */}
-                    <div className="bg-[#0f172a] text-white p-5 lg:p-8 rounded-[1.5rem] lg:rounded-[2.5rem] shadow-2xl relative overflow-hidden border border-slate-800">
+                    <div className="bg-[#0f172a] text-white p-5 lg:p-8 rounded-[1.5rem] lg:rounded-[2.5rem] shadow-2xl relative overflow-hidden border border-slate-800 shrink-0">
                         <div className="relative z-10">
                             <div className="flex justify-between items-start mb-1">
                                 <h2 className="text-[9px] lg:text-[11px] font-black text-indigo-400 uppercase tracking-widest">Site Viability</h2>
@@ -1289,7 +1273,7 @@ const App: React.FC = () => {
                     </div>
 
                     {/* Metrics Chart */}
-                    <div className="bg-slate-50/50 p-3 lg:p-4 rounded-2xl lg:rounded-3xl border border-slate-100 shadow-inner h-40 lg:h-48">
+                    <div className="bg-slate-50/50 p-3 lg:p-4 rounded-2xl lg:rounded-3xl border border-slate-100 shadow-inner h-40 lg:h-48 shrink-0">
                         <ResponsiveContainer width="100%" height="100%">
                             <BarChart data={chartData} layout="vertical" margin={{ left: -5, right: 15 }}>
                                 <XAxis type="number" hide domain={[0, 100]} />
@@ -1303,7 +1287,7 @@ const App: React.FC = () => {
                     </div>
 
                     {/* AI Strategy Insights */}
-                    <div className="flex flex-col">
+                    <div className="flex flex-col shrink-0 mb-4">
                         <div className="flex items-center justify-between mb-3 lg:mb-4 px-1">
                             <h3 className="text-[10px] lg:text-xs font-black text-slate-400 uppercase tracking-widest">Geo-Grounded Strategy</h3>
                             {isAnalyzing && (
@@ -1332,24 +1316,34 @@ const App: React.FC = () => {
                         </div>
                     )}
                 </div>
+            </div>
 
-                <div className="mt-auto pt-6 flex items-center justify-between">
-                    <div className="text-[8px] lg:text-[9px] text-slate-300 font-black uppercase tracking-widest">
-                        Grounded: Gemini 2.5 + Live Scrape
-                    </div>
+            {/* RIGHT SIDEBAR / CHAT UI */}
+            {/* The ChatInterface component will be refactored to take full height of its container next */}
+            <div className={`absolute right-4 top-24 bottom-4 w-[360px] max-w-[90vw] z-20 transition-transform duration-500 ease-in-out pointer-events-none ${chatOpen ? 'translate-x-0' : 'translate-x-[120%]'}`}>
+                <div className="w-full h-full pointer-events-auto flex flex-col">
+                    <ChatInterface
+                        messages={conversationMessages}
+                        onSendMessage={handleUserMessage}
+                        onClearChat={handleClearChat}
+                        isAITyping={isAITyping}
+                        isOpen={true} // Force true inside its own container, toggle via the container itself
+                        onToggle={() => setChatOpen(!chatOpen)}
+                        selectedWard={selectedWard || undefined}
+                    />
                 </div>
             </div>
 
-            {/* Chat Interface */}
-            <ChatInterface
-                messages={conversationMessages}
-                onSendMessage={handleUserMessage}
-                onClearChat={handleClearChat}
-                isAITyping={isAITyping}
-                isOpen={chatOpen}
-                onToggle={() => setChatOpen(!chatOpen)}
-                selectedWard={selectedWard || undefined}
-            />
+            {/* Floating Chat Toggle Button (when left sidebar is closed) */}
+            {!chatOpen && (
+                <button
+                    onClick={() => setChatOpen(true)}
+                    className="absolute right-4 bottom-4 z-20 bg-indigo-600 text-white p-4 rounded-full shadow-2xl hover:bg-indigo-700 hover:scale-110 transition-all border border-indigo-400 flex items-center justify-center group"
+                >
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
+                    <span className="absolute right-14 opacity-0 group-hover:opacity-100 bg-black/80 text-white text-[10px] font-bold px-2 py-1 rounded whitespace-nowrap transition-opacity">Open AI Chat</span>
+                </button>
+            )}
         </div>
     );
 };
