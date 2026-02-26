@@ -3,7 +3,7 @@
  * Floating chat panel for conversational agent
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './ChatInterface.css';
 
 export interface Message {
@@ -33,8 +33,63 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     selectedWard
 }) => {
     const [inputValue, setInputValue] = useState('');
+    const [isListening, setIsListening] = useState(false);
+    const [interimTranscript, setInterimTranscript] = useState('');
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
+    const recognitionRef = useRef<any>(null);
+
+    // Speech recognition support check
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const speechSupported = !!SpeechRecognition;
+
+    const toggleListening = useCallback(() => {
+        if (isListening) {
+            recognitionRef.current?.stop();
+            setIsListening(false);
+            setInterimTranscript('');
+            return;
+        }
+
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.lang = 'en-IN';
+
+        recognition.onstart = () => setIsListening(true);
+
+        recognition.onresult = (event: any) => {
+            let interim = '';
+            let final = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const transcript = event.results[i][0].transcript;
+                if (event.results[i].isFinal) {
+                    final += transcript;
+                } else {
+                    interim += transcript;
+                }
+            }
+            if (final) {
+                setInputValue(prev => (prev + ' ' + final).trim());
+                setInterimTranscript('');
+            } else {
+                setInterimTranscript(interim);
+            }
+        };
+
+        recognition.onerror = () => {
+            setIsListening(false);
+            setInterimTranscript('');
+        };
+
+        recognition.onend = () => {
+            setIsListening(false);
+            setInterimTranscript('');
+        };
+
+        recognitionRef.current = recognition;
+        recognition.start();
+    }, [isListening, SpeechRecognition]);
 
     // Auto-scroll to bottom when new messages arrive
     useEffect(() => {
@@ -205,26 +260,54 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
             {/* Input */}
             <div className="chat-input-container">
-                <input
-                    ref={inputRef}
-                    type="text"
-                    value={inputValue}
-                    onChange={(e) => setInputValue(e.target.value)}
-                    onKeyPress={handleKeyPress}
-                    placeholder="Ask me anything..."
-                    className="chat-input"
-                    disabled={isAITyping}
-                />
-                <button
-                    onClick={handleSend}
-                    disabled={!inputValue.trim() || isAITyping}
-                    className="chat-send-button"
-                    aria-label="Send message"
-                >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                    </svg>
-                </button>
+                {isListening && (
+                    <div className="listening-badge">
+                        <span className="listening-dot"></span>
+                        🎙️ Listening…
+                    </div>
+                )}
+                <div className="chat-input-row">
+                    <input
+                        ref={inputRef}
+                        type="text"
+                        value={isListening && interimTranscript ? interimTranscript : inputValue}
+                        onChange={(e) => { if (!isListening) setInputValue(e.target.value); }}
+                        onKeyPress={handleKeyPress}
+                        placeholder={isListening ? 'Speak now…' : 'Ask me anything…'}
+                        className={`chat-input${isListening ? ' chat-input-listening' : ''}`}
+                        disabled={isAITyping}
+                        readOnly={isListening}
+                    />
+                    {speechSupported && (
+                        <button
+                            onClick={toggleListening}
+                            disabled={isAITyping}
+                            className={`chat-mic-button${isListening ? ' chat-mic-button--active' : ''}`}
+                            aria-label={isListening ? 'Stop listening' : 'Start voice input'}
+                            title={isListening ? 'Stop listening' : 'Speak your query'}
+                        >
+                            {isListening ? (
+                                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                                    <rect x="6" y="6" width="12" height="12" rx="2" />
+                                </svg>
+                            ) : (
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                                </svg>
+                            )}
+                        </button>
+                    )}
+                    <button
+                        onClick={handleSend}
+                        disabled={!inputValue.trim() || isAITyping}
+                        className="chat-send-button"
+                        aria-label="Send message"
+                    >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                        </svg>
+                    </button>
+                </div>
             </div>
         </div>
     );
