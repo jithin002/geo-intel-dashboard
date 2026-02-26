@@ -59,8 +59,9 @@ export interface MapAction {
 
 export interface ChatResponse {
     text: string;
-    mapAction?: MapAction; // NEW: Trigger map UI updates
-    placesData?: any; // Raw Places API data (optional)
+    mapAction?: MapAction;
+    placesData?: any;
+    prefetchedIntel?: any; // LocationIntelligence already fetched — App.tsx skips re-fetch
     usedPlacesAPI: boolean;
     usedGemini: boolean;
 }
@@ -158,10 +159,16 @@ export async function processUserQuery(
 
             const finalText = finalResponse.text || 'Analysis complete.';
 
+            // Determine if placesData is a LocationIntelligence object (analyze/get_intelligence)
+            const isLocationIntel =
+                toolRequest.action === 'analyze_location' ||
+                toolRequest.action === 'get_intelligence';
+
             return {
                 text: finalText,
                 mapAction,
                 placesData,
+                prefetchedIntel: isLocationIntel ? placesData : undefined,
                 usedPlacesAPI: true,
                 usedGemini: true
             };

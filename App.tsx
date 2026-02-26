@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMapEvents, useMap, Circle, GeoJSON } from 'react-leaflet';
 import L from 'leaflet';
 import { HSR_CENTER, MOCK_LOCATIONS } from './constants';
@@ -215,6 +215,13 @@ const WardLayer = ({ onWardClick }: { onWardClick: (lat: number, lng: number, wa
     );
 };
 
+// Smart keyword shortcuts for the search bar autocomplete
+const SEARCH_KEYWORDS = [
+    'top 3 spots', 'top 5 spots', 'top 10 spots',
+    'low competition', 'high growth', 'untapped areas',
+    'best overall', 'high opportunity', 'no gyms nearby'
+];
+
 const App: React.FC = () => {
     const [selectedPos, setSelectedPos] = useState<[number, number] | null>(null);
     const [searchRadius, setSearchRadius] = useState<number>(1000);
@@ -248,6 +255,32 @@ const App: React.FC = () => {
     const [chatOpen, setChatOpen] = useState(false);
     const [conversationMessages, setConversationMessages] = useState<Message[]>([]);
     const [isAITyping, setIsAITyping] = useState(false);
+
+    // VOICE + AUTOCOMPLETE: Search bar enhancements
+    const [isSearchListening, setIsSearchListening] = useState(false);
+    const [searchSuggestions, setSearchSuggestions] = useState<string[]>([]);
+    const [suggestionIndex, setSuggestionIndex] = useState(-1);
+    const searchRecognitionRef = useRef<any>(null);
+    const searchInputRef = useRef<HTMLInputElement>(null);
+
+
+    // AUTOCOMPLETE: Compute suggestions whenever searchQuery changes
+    const updateSearchSuggestions = useCallback((q: string) => {
+        if (!q || q.length < 1) {
+            setSearchSuggestions([]);
+            setSuggestionIndex(-1);
+            return;
+        }
+        const lower = q.toLowerCase();
+        const wardMatches = wardClusters
+            .filter((w: any) => w.wardName.toLowerCase().includes(lower))
+            .slice(0, 5)
+            .map((w: any) => w.wardName);
+        const keywordMatches = SEARCH_KEYWORDS.filter(k => k.includes(lower));
+        const combined = [...new Set([...wardMatches, ...keywordMatches])].slice(0, 6);
+        setSearchSuggestions(combined);
+        setSuggestionIndex(-1);
+    }, [wardClusters]);
 
     // Render helper: display search results list
     const SearchResultsPanel = () => {
@@ -394,6 +427,47 @@ const App: React.FC = () => {
             setQueryDescription('Search failed. Please try again.');
         }
     }, [wardClusters, wardScores]);
+
+    // VOICE: Toggle search bar microphone (placed after handlePlaceSearch to avoid forward-reference)
+    const toggleSearchListening = useCallback(() => {
+        const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+        if (!SpeechRecognition) return;
+
+        if (isSearchListening) {
+            searchRecognitionRef.current?.stop();
+            setIsSearchListening(false);
+            return;
+        }
+
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.lang = 'en-IN';
+
+        recognition.onstart = () => setIsSearchListening(true);
+
+        recognition.onresult = (event: any) => {
+            let interim = '';
+            let final = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const t = event.results[i][0].transcript;
+                if (event.results[i].isFinal) { final += t; }
+                else { interim += t; }
+            }
+            if (final) {
+                setSearchQuery(final.trim());
+                handlePlaceSearch(final.trim());
+            } else if (interim) {
+                setSearchQuery(interim);
+            }
+        };
+
+        recognition.onerror = () => setIsSearchListening(false);
+        recognition.onend = () => setIsSearchListening(false);
+
+        searchRecognitionRef.current = recognition;
+        recognition.start();
+    }, [isSearchListening, handlePlaceSearch]);
 
     // Load ward clusters from CSV on mount
     useEffect(() => {
@@ -585,12 +659,22 @@ const App: React.FC = () => {
             setScores(fallbackScores);
             setIsAnalyzing(false);
         }
-    }, [selectedPos, searchRadius]);
+    }, [selectedPos]); // ✅ searchRadius removed — radius change no longer fires 6 API requests
+
+    // ✅ Debounced analysis — prevents burst requests on rapid clicks
+    const analysisDebounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useEffect(() => {
         if (selectedPos) {
-            performAnalysis();
+            // Cancel any pending analysis from a previous click
+            if (analysisDebounceRef.current) clearTimeout(analysisDebounceRef.current);
+            analysisDebounceRef.current = setTimeout(() => {
+                performAnalysis();
+            }, 500); // 500ms debounce — ignores rapid/accidental clicks
         }
+        return () => {
+            if (analysisDebounceRef.current) clearTimeout(analysisDebounceRef.current);
+        };
     }, [selectedPos, performAnalysis]);
 
     const catchmentOverlap = useMemo(() => {
@@ -683,7 +767,6 @@ const App: React.FC = () => {
                     case 'analyze':
                     case 'navigate':
                         if (action.payload.location) {
-                            // Update map state
                             setSelectedPos(action.payload.location);
                             setMapZoom(action.payload.zoom || 14);
 
@@ -691,25 +774,33 @@ const App: React.FC = () => {
                                 setSelectedWard(action.payload.wardName);
                             }
 
-                            // CRITICAL: Trigger existing analysis flow
-                            // This shows scores, markers, POIs - the full framework
                             if (action.payload.triggerAnalysis) {
-                                console.log('🔍 Triggering performAnalysis() - existing framework flow');
-                                setTimeout(() => {
-                                    performAnalysis();
-                                }, 300);
+                                if (response.prefetchedIntel) {
+                                    // ✅ Chat already fetched intel — apply directly, skip re-fetch
+                                    console.log('♻️ Using prefetchedIntel — skipping performAnalysis()');
+                                    const intel = response.prefetchedIntel;
+                                    setRealPOIs({
+                                        gyms: intel.gyms?.places || [],
+                                        cafes: intel.cafesRestaurants?.places || [],
+                                        corporates: intel.corporateOffices?.places || [],
+                                        transit: intel.transitStations?.places || [],
+                                        apartments: intel.apartments?.places || [],
+                                        parks: []
+                                    });
+                                } else {
+                                    // Fallback: trigger fresh analysis
+                                    console.log('🔍 Triggering performAnalysis() — no prefetchedIntel');
+                                    setTimeout(() => { performAnalysis(); }, 300);
+                                }
                             }
                         }
                         break;
 
                     case 'zoom':
-                        if (action.payload.zoom) {
-                            setMapZoom(action.payload.zoom);
-                        }
+                        if (action.payload.zoom) setMapZoom(action.payload.zoom);
                         break;
 
                     case 'highlight':
-                        // Could highlight specific POI types in the future
                         console.log('Highlighting:', action.payload.poiType);
                         break;
                 }
@@ -1086,21 +1177,91 @@ const App: React.FC = () => {
                         {/* Search Input */}
                         <div className="flex-1 relative">
                             <input
+                                ref={searchInputRef}
                                 type="text"
-                                placeholder='Try: "top 3 spots" or "low competition"'
+                                placeholder={isSearchListening ? '🎙️ Listening…' : 'Try: "top 3 spots" or ward name'}
                                 value={searchQuery}
-                                onChange={(e) => setSearchQuery(e.target.value)}
-                                onKeyPress={(e) => {
-                                    if (e.key === 'Enter') handlePlaceSearch(searchQuery.trim());
+                                onChange={(e) => {
+                                    setSearchQuery(e.target.value);
+                                    updateSearchSuggestions(e.target.value);
                                 }}
-                                className="w-full px-4 py-2 text-sm font-bold text-slate-700 bg-white/50 border border-slate-200 rounded-xl focus:border-indigo-500 focus:bg-white focus:outline-none transition-all placeholder:text-slate-400 placeholder:font-normal shadow-inner"
+                                onKeyDown={(e) => {
+                                    if (e.key === 'ArrowDown') {
+                                        e.preventDefault();
+                                        setSuggestionIndex(i => Math.min(i + 1, searchSuggestions.length - 1));
+                                    } else if (e.key === 'ArrowUp') {
+                                        e.preventDefault();
+                                        setSuggestionIndex(i => Math.max(i - 1, -1));
+                                    } else if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        const chosen = suggestionIndex >= 0 ? searchSuggestions[suggestionIndex] : searchQuery.trim();
+                                        if (chosen) {
+                                            setSearchQuery(chosen);
+                                            setSearchSuggestions([]);
+                                            setSuggestionIndex(-1);
+                                            handlePlaceSearch(chosen);
+                                        }
+                                    } else if (e.key === 'Escape') {
+                                        setSearchSuggestions([]);
+                                        setSuggestionIndex(-1);
+                                    }
+                                }}
+                                onBlur={() => setTimeout(() => { setSearchSuggestions([]); setSuggestionIndex(-1); }, 150)}
+                                className={`w-full pl-4 pr-20 py-2 text-sm font-bold text-slate-700 bg-white/50 border rounded-xl focus:bg-white focus:outline-none transition-all placeholder:font-normal shadow-inner ${isSearchListening ? 'border-red-300 bg-red-50/50 placeholder:text-red-400' : 'border-slate-200 focus:border-indigo-500 placeholder:text-slate-400'}`}
                             />
-                            <button
-                                onClick={() => handlePlaceSearch(searchQuery.trim())}
-                                className="absolute right-1 top-1 bottom-1 px-3 bg-indigo-600 text-white text-xs font-black rounded-lg hover:shadow-lg transition-all"
-                            >
-                                🔍
-                            </button>
+
+                            {/* Mic + Search buttons */}
+                            <div className="absolute right-1 top-1 bottom-1 flex gap-1">
+                                {((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) && (
+                                    <button
+                                        onClick={toggleSearchListening}
+                                        title={isSearchListening ? 'Stop listening' : 'Search by voice'}
+                                        className={`px-2 text-xs rounded-lg transition-all flex items-center justify-center ${isSearchListening ? 'bg-red-500 text-white animate-pulse' : 'bg-slate-100 text-slate-500 hover:bg-indigo-50 hover:text-indigo-600'}`}
+                                        aria-label={isSearchListening ? 'Stop voice search' : 'Voice search'}
+                                    >
+                                        {isSearchListening ? (
+                                            <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                                                <rect x="6" y="6" width="12" height="12" rx="2" />
+                                            </svg>
+                                        ) : (
+                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                                            </svg>
+                                        )}
+                                    </button>
+                                )}
+                                <button
+                                    onClick={() => { setSearchSuggestions([]); handlePlaceSearch(searchQuery.trim()); }}
+                                    className="px-3 bg-indigo-600 text-white text-xs font-black rounded-lg hover:shadow-lg transition-all"
+                                >
+                                    🔍
+                                </button>
+                            </div>
+
+                            {/* Autocomplete Dropdown */}
+                            {searchSuggestions.length > 0 && (
+                                <div className="absolute top-full left-0 right-0 mt-1.5 bg-white border border-slate-200 rounded-xl shadow-2xl z-50 overflow-hidden">
+                                    {searchSuggestions.map((s, idx) => {
+                                        const isWard = !SEARCH_KEYWORDS.includes(s);
+                                        return (
+                                            <div
+                                                key={s}
+                                                onMouseDown={() => {
+                                                    setSearchQuery(s);
+                                                    setSearchSuggestions([]);
+                                                    setSuggestionIndex(-1);
+                                                    handlePlaceSearch(s);
+                                                }}
+                                                className={`flex items-center gap-2 px-3 py-2 text-xs font-semibold cursor-pointer transition-colors ${idx === suggestionIndex ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700 hover:bg-slate-50'}`}
+                                            >
+                                                <span className="text-base">{isWard ? '📍' : '🔎'}</span>
+                                                <span>{s}</span>
+                                                {isWard && <span className="ml-auto text-[9px] text-slate-400 font-bold uppercase tracking-wide">Ward</span>}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>
