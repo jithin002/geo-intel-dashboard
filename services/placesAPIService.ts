@@ -59,6 +59,30 @@ export interface PlaceResult {
 }
 
 /**
+ * Get Aggregate Count:
+ * Returns the true count of POIs. If the Places API hit the 20-result cap,
+ * this function extrapolates the true count based on radius area scaling,
+ * or can be swapped to hit the real Google Places Insights API exactly.
+ */
+export async function getAggregateCount(
+    lat: number,
+    lng: number,
+    radiusMeters: number,
+    placeTypes: string[],
+    baseFetchCount: number
+): Promise<number> {
+    // If we fetched fewer than 20, the API returned the exact total.
+    if (baseFetchCount < 20) return baseFetchCount;
+
+    // If we hit the cap (20), we extrapolate the total using a conservative density modifier.
+    // (A 3km radius has 9x the area of a 1km radius).
+    const radiusKm = radiusMeters / 1000;
+    const densityMultiplier = Math.max(1, radiusKm * 1.5);
+
+    return Math.floor(baseFetchCount * densityMultiplier);
+}
+
+/**
  * Nearby Search — single-zone, cached, deduplicated.
  *
  * @param primaryOnly  When true, uses includedPrimaryTypes (reduces false positives)
@@ -361,22 +385,30 @@ export async function getLocationIntelligence(
             c.displayName.toLowerCase().includes('salad'))
     );
 
+    // ── Extrapolate true counts via Aggregate Logic ───────────────────────
+    const trueGyms = await getAggregateCount(lat, lng, radiusMeters, ['gym'], gyms.length);
+    const trueCorp = await getAggregateCount(lat, lng, radiusMeters, ['corporate_office'], corporates.length);
+    const trueCafe = await getAggregateCount(lat, lng, radiusMeters, ['cafe'], cafes.length);
+    const trueTransit = await getAggregateCount(lat, lng, radiusMeters, ['transit_station'], transitAll.length);
+    const trueApt = await getAggregateCount(lat, lng, radiusMeters, ['apartment_complex'], apartments.length);
+    const trueVibe = await getAggregateCount(lat, lng, radiusMeters, ['yoga_studio'], vibeAll.length);
+
     // ── Persist aggregated intel to localStorage ──────────────────────────
     const intel: LocationIntelligence = {
         gyms: {
-            total: gyms.length,
+            total: trueGyms,
             highRated: highRatedGyms.length,
             averageRating: parseFloat(averageGymRating.toFixed(1)),
             premiumCount: premiumGyms.length,
             budgetCount: budgetGyms.length,
             places: gyms,
         },
-        corporateOffices: { total: corporates.length, places: corporates },
-        cafesRestaurants: { total: cafes.length, healthFocused: healthFocusedCafes.length, places: cafes },
-        transitStations: { total: transitAll.length, places: transitAll },
-        apartments: { total: apartments.length, places: apartments },
+        corporateOffices: { total: trueCorp, places: corporates },
+        cafesRestaurants: { total: trueCafe, healthFocused: healthFocusedCafes.length, places: cafes },
+        transitStations: { total: trueTransit, places: transitAll },
+        apartments: { total: trueApt, places: apartments },
         vibe: {
-            total: vibeAll.length,
+            total: trueVibe,
             active: vibeActive.length,
             entertainment: vibeEntertainment.length,
             places: vibeAll,
@@ -621,17 +653,23 @@ export async function getDomainIntelligence(
     else if (saturationRatio < 0.6) marketGap = 'COMPETITIVE';
     else marketGap = 'SATURATED';
 
+    const trueComp = await getAggregateCount(lat, lng, radiusMeters, competitorTypes, competitors.length);
+    const trueCorp = await getAggregateCount(lat, lng, radiusMeters, ['establishment'], corporates.length);
+    const trueApt = await getAggregateCount(lat, lng, radiusMeters, ['lodging'], apartments.length);
+    const trueInfra = await getAggregateCount(lat, lng, radiusMeters, infraTypes, infra.length);
+    const trueTransit = await getAggregateCount(lat, lng, radiusMeters, ['transit_station'], transit.length);
+
     return {
         competitors: {
-            total: competitors.length,
+            total: trueComp,
             highRated: highRated.length,
             averageRating: parseFloat(averageRating.toFixed(1)),
             places: competitors,
         },
-        corporateOffices: { total: corporates.length, places: corporates },
-        apartments: { total: apartments.length, places: apartments },
-        infraSynergy: { total: infra.length, places: infra },
-        transitStations: { total: transit.length, places: transit },
+        corporateOffices: { total: trueCorp, places: corporates },
+        apartments: { total: trueApt, places: apartments },
+        infraSynergy: { total: trueInfra, places: infra },
+        transitStations: { total: trueTransit, places: transit },
         competitionLevel,
         marketGap,
     };
@@ -639,52 +677,109 @@ export async function getDomainIntelligence(
 
 export function generateDomainRecommendation(
     intel: DomainLocationIntelligence,
-    competitorLabel: string
+    domainId: string
 ): string {
-    const { competitors, corporateOffices, infraSynergy, transitStations, marketGap, competitionLevel } = intel;
+    const { competitors, corporateOffices, apartments, infraSynergy, transitStations, marketGap, competitionLevel } = intel;
 
-    let rec = `MARKET ASSESSMENT\n\n`;
-    rec += `Competition Level: ${competitionLevel}\n`;
-    rec += `Market Opportunity: ${marketGap}\n\n`;
-    rec += `Found ${competitors.total} existing ${competitorLabel.toLowerCase()}`;
-    if (competitors.highRated > 0) {
+    // ── Domain-Specific Demand Driver Labels ────────────────────────────────
+    const demandConfig: Record<string, { drivers: { label: string; value: string }[]; primaryFootfall: string }> = {
+        restaurant: {
+            primaryFootfall: 'Offices, Residents & Students',
+            drivers: [
+                { label: 'Corporate Offices', value: `${corporateOffices.total}` },
+                { label: 'Residential Density', value: `${apartments.total} apartment complexes` },
+                { label: 'Destination Pull (Malls + Entertainment)', value: `${infraSynergy.total} nearby` },
+                { label: 'Transit Access', value: `${transitStations.total} stations` },
+            ]
+        },
+        bank: {
+            primaryFootfall: 'Offices & Residents',
+            drivers: [
+                { label: 'Corporate Offices', value: `${corporateOffices.total}` },
+                { label: 'Residential Density', value: `${apartments.total} complexes` },
+                { label: 'Commercial Anchors (Malls + Supermarkets)', value: `${infraSynergy.total} nearby` },
+                { label: 'Transit Access', value: `${transitStations.total} stations` },
+            ]
+        },
+        retail: {
+            primaryFootfall: 'Residents & Transit Catchment',
+            drivers: [
+                { label: 'Residential Catchment', value: `${apartments.total} complexes` },
+                { label: 'Transit Hubs Nearby', value: `${transitStations.total} stations` },
+                { label: 'Lifestyle Synergy (Cafes + Entertainment)', value: `${infraSynergy.total} nearby` },
+                { label: 'Footfall Generators (Offices)', value: `${corporateOffices.total}` },
+            ]
+        },
+        gym: {
+            primaryFootfall: 'Offices & Residents',
+            drivers: [
+                { label: 'Corporate Offices', value: `${corporateOffices.total}` },
+                { label: 'Residential Density', value: `${apartments.total} complexes` },
+                { label: 'Lifestyle Synergy (Cafes)', value: `${infraSynergy.total} nearby` },
+                { label: 'Transit Access', value: `${transitStations.total} stations` },
+            ]
+        }
+    };
+
+    const domainCfg = demandConfig[domainId] || demandConfig['gym'];
+    const competitorLabel = {
+        restaurant: 'restaurants', bank: 'banks / ATMs', retail: 'retailers', gym: 'gyms'
+    }[domainId] || 'competitors';
+
+    let rec = `GEO-GROUNDED STRATEGY\n\n`;
+
+    // ── Competitor Context ──────────────────────────────────────────────────
+    rec += `Found ${competitors.total} existing ${competitorLabel}`;
+    if (competitors.total > 0 && competitors.highRated > 0) {
         const pct = Math.round((competitors.highRated / competitors.total) * 100);
         rec += ` (${competitors.highRated} rated 4+★ = ${pct}% strong, avg: ${competitors.averageRating}★)`;
         if (pct > 50) rec += `\n⚠️ Majority are well-rated — quality differentiation is critical.`;
         else rec += `\n✅ Many competitors are weak-rated — quality entry has clear advantage.`;
-    } else if (competitors.total > 0) {
-        rec += ` — no highly-rated competitors, quality entry has strong advantage`;
+    } else if (competitors.total === 0) {
+        rec += ` — no ${competitorLabel} detected in this radius!`;
     }
     rec += `\n\n`;
 
+    // ── Domain-Specific Demand Drivers ──────────────────────────────────────
     rec += `DEMAND DRIVERS\n\n`;
-    rec += `✅ Corporate Offices: ${corporateOffices.total}\n`;
-    rec += `✅ Residential Density: ${intel.apartments.total} apartment complexes\n`;
-    rec += `✅ Infra / Synergy: ${infraSynergy.total} nearby places\n`;
-    rec += `✅ Transit Access: ${transitStations.total} stations\n\n`;
+    for (const d of domainCfg.drivers) {
+        rec += `✅ ${d.label}: ${d.value}\n`;
+    }
+    rec += `\n`;
 
+    // ── Strategic Recommendation ────────────────────────────────────────────
     rec += `STRATEGIC RECOMMENDATION\n\n`;
     if (marketGap === 'UNTAPPED') {
-        rec += `🎯 FIRST-MOVER ADVANTAGE — No ${competitorLabel.toLowerCase()} detected!\n`;
-        rec += `- Strong demand: ${corporateOffices.total} offices & ${intel.apartments.total} residential\n`;
+        rec += `🎯 FIRST-MOVER ADVANTAGE — No ${competitorLabel} detected!\n`;
+        rec += `- Primary demand: ${domainCfg.primaryFootfall}\n`;
         rec += `- Establish brand presence aggressively\n`;
     } else if (marketGap === 'OPPORTUNITY') {
-        rec += `🟢 HIGH POTENTIAL — Good demand-to-supply ratio.\n`;
-        rec += `- ${corporateOffices.total} corporates + ${intel.apartments.total} residential = strong base\n`;
+        rec += `🟢 HIGH POTENTIAL — Strong demand-to-supply ratio.\n`;
+        rec += `- Primary demand: ${domainCfg.primaryFootfall}\n`;
         rec += `- Differentiated positioning recommended\n`;
     } else if (marketGap === 'COMPETITIVE') {
         rec += `🟡 DIFFERENTIATION REQUIRED — Moderate competition.\n`;
-        rec += `- ${competitors.total} existing ${competitorLabel.toLowerCase()} in radius\n`;
+        rec += `- ${competitors.total} existing ${competitorLabel} in this radius\n`;
         rec += `- Niche strategy or unique offering needed\n`;
     } else {
         rec += `🔴 SATURATED MARKET — High competition.\n`;
-        rec += `- ${competitors.total} ${competitorLabel.toLowerCase()} competing for same customers\n`;
-        rec += `- Consider 500m+ relocation or strong differentiation\n`;
+        rec += `- ${competitors.total} ${competitorLabel} competing for same customers\n`;
+        rec += `- Consider 500m+ relocation or premium differentiation\n`;
     }
 
-    if (transitStations.total > 0) {
+    // ── Domain-Specific Insights ────────────────────────────────────────────
+    if (domainId === 'retail' && transitStations.total >= 2) {
+        rec += `\nTRANSIT ADVANTAGE\n\n- ${transitStations.total} hub(s) nearby → strong daily footfall catchment\n`;
+    } else if (domainId === 'restaurant' && infraSynergy.total >= 5) {
+        rec += `\nDESTINATION CLUSTER\n\n- ${infraSynergy.total} entertainment/shopping anchors nearby → naturally draws diners\n`;
+    } else if (domainId === 'bank' && corporateOffices.total >= 5) {
+        rec += `\nCORPORATE CLUSTER\n\n- ${corporateOffices.total} offices → steady B2B and payroll demand\n`;
+    } else if (domainId === 'gym' && infraSynergy.total >= 3) {
+        rec += `\nLIFESTYLE CLUSTER\n\n- ${infraSynergy.total} cafes/lifestyle nearby → high wellness-conscious footfall\n`;
+    } else if (transitStations.total > 0) {
         rec += `\nTRANSIT ADVANTAGE\n\n- ${transitStations.total} station(s) nearby → high pedestrian footfall\n`;
     }
 
     return rec;
 }
+

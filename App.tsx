@@ -10,7 +10,8 @@ import './services/leaflet-heat'; // Local vendored version used
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, Tooltip, LabelList } from 'recharts';
 import { getLocationIntelligence, getDomainIntelligence, generateDataDrivenRecommendation, generateDomainRecommendation, PlaceResult, textSearch } from './services/placesAPIService';
 import { executeSearch, getQueryDescription } from './searchUtils';
-import { DOMAIN_CONFIG } from './domains';
+import { DOMAIN_CONFIG, DomainId } from './domains';
+import { calculateDomainScores } from './services/scoringEngine';
 import { ChatInterface } from './components/ChatInterface';
 import { addMessage, loadConversationHistory, clearConversationHistory, getRecentContext, extractLocationMentions, Message } from './services/conversationService';
 import { processUserQuery } from './services/chatOrchestrationService';
@@ -66,6 +67,7 @@ const DOMAIN_ICON_MAP = {
     gym: { icon: gymIcon, emoji: '🏋️', infraEmoji: '☕', infraLabel: 'LIFESTYLE' },
     restaurant: { icon: restaurantIcon, emoji: '🍽️', infraEmoji: '🛍️', infraLabel: 'FOOTFALL' },
     bank: { icon: bankIcon, emoji: '🏦', infraEmoji: '🏬', infraLabel: 'COMMERCIAL' },
+    retail: { icon: synergyIcon, emoji: '🛍️', infraEmoji: '🍿', infraLabel: 'SYNERGY' }
 };
 
 const getIconForType = (type: LocationType) => {
@@ -282,7 +284,7 @@ const App: React.FC = () => {
     const searchInputRef = useRef<HTMLInputElement>(null);
 
     // DOMAIN: Active analysis domain (gym / restaurant / bank)
-    const [activeDomain, setActiveDomain] = useState<'gym' | 'restaurant' | 'bank'>('gym');
+    const [activeDomain, setActiveDomain] = useState<DomainId>('gym');
 
 
     // AUTOCOMPLETE: Compute suggestions whenever searchQuery changes
@@ -572,48 +574,7 @@ const App: React.FC = () => {
                     parks: []
                 });
 
-                const logNorm = (count: number, sat: number) =>
-                    Math.log1p(count) / Math.log1p(sat) * 100;
-                const clampScore = (v: number) => Math.max(0, Math.min(100, v));
-
-                const gymCt = intel.gyms.total;
-                const aptCt = intel.apartments.total;
-                const corpCt = intel.corporateOffices.total;
-                const cafeCt = intel.cafesRestaurants.total;
-
-                const rawDemand = clampScore(
-                    logNorm(aptCt, 40) * 0.55 +
-                    logNorm(corpCt, 30) * 0.20 +
-                    logNorm(cafeCt, 30) * 0.25
-                );
-                const gymPenalty = logNorm(gymCt, 15) / 100 * 0.35;
-                const demandScore = clampScore(rawDemand * (1 - gymPenalty));
-
-                const demandUnits = aptCt + (corpCt * 0.8);
-                const gapRatio = demandUnits / Math.max(gymCt, 1);
-                const gapScore = clampScore(logNorm(gapRatio, 5));
-
-                const vibeCt = (intel as any).vibe?.total ?? 0;
-                const vibeActive = (intel as any).vibe?.active ?? 0;
-                const vibeSocial = (intel as any).vibe?.entertainment ?? 0;
-                const vibeScore = clampScore(
-                    logNorm(vibeActive, 6) * 0.55 +
-                    logNorm(vibeSocial, 8) * 0.45
-                );
-
-                const metroCt = intel.transitStations.places.filter((p: any) =>
-                    p.types?.some((t: string) => t.includes('subway') || t.includes('light_rail'))
-                ).length;
-                const busCt = intel.transitStations.total - metroCt;
-                const connScore = clampScore(logNorm(metroCt, 5) * 0.65 + logNorm(busCt, 10) * 0.6 * 0.35);
-
-                const realScores = {
-                    demographicLoad: Math.round(demandScore),
-                    connectivity: Math.round(connScore),
-                    competitorRatio: Math.round(gapScore),
-                    infrastructure: Math.round(vibeScore),
-                    total: Math.round(demandScore * 0.30 + gapScore * 0.30 + vibeScore * 0.25 + connScore * 0.15)
-                };
+                const realScores = calculateDomainScores(intel, activeDomain, searchRadius);
 
                 console.log('📊 SCORING V2 (GYM):', realScores);
                 setScores(realScores);
@@ -656,40 +617,8 @@ const App: React.FC = () => {
                     parks: []
                 });
 
-                // Domain-specific scoring using domain weights
-                const logNorm = (count: number, sat: number) =>
-                    Math.log1p(count) / Math.log1p(sat) * 100;
-                const clampScore = (v: number) => Math.max(0, Math.min(100, v));
-                const w = domain.scoring;
-
-                const compCt = intel.competitors.total;
-                const aptCt = intel.apartments.total;
-                const corpCt = intel.corporateOffices.total;
-                const infraCt = intel.infraSynergy.total;
-                const metroCt = intel.transitStations.places.filter((p: any) =>
-                    p.types?.some((t: string) => t.includes('subway') || t.includes('light_rail'))
-                ).length;
-                const busCt = intel.transitStations.total - metroCt;
-
-                const demandScore = clampScore(logNorm(aptCt, 40) * 0.55 + logNorm(corpCt, 30) * 0.45);
-                const connScore = clampScore(logNorm(metroCt, 5) * 0.65 + logNorm(busCt, 10) * 0.35);
-                const demandUnits = aptCt + corpCt + (infraCt * 0.5);
-                const gapRatio = demandUnits / Math.max(compCt, 1);
-                const gapScore = clampScore(logNorm(gapRatio, 5));
-                const infraScore = clampScore(logNorm(infraCt, 15));
-
-                const realScores = {
-                    demographicLoad: Math.round(demandScore),
-                    connectivity: Math.round(connScore),
-                    competitorRatio: Math.round(gapScore),
-                    infrastructure: Math.round(infraScore),
-                    total: Math.round(
-                        demandScore * w.demand.weight +
-                        connScore * w.connectivity.weight +
-                        gapScore * w.gap.weight +
-                        infraScore * w.infra.weight
-                    )
-                };
+                // Domain-specific scoring using dynamically loaded engine
+                const realScores = calculateDomainScores(intel, activeDomain, searchRadius);
 
                 console.log(`📊 SCORING (${domain.label}):`, realScores);
                 setScores(realScores);
@@ -704,7 +633,7 @@ const App: React.FC = () => {
                     setWardScores(prev => ({ ...prev, [selectedCluster]: { opportunityScore, finalScore, growthRate, demographicLoad: realScores.demographicLoad, competitorDensity: intel.competitors.total } }));
                 }
 
-                const recommendation = generateDomainRecommendation(intel, domain.competitorLabel);
+                const recommendation = generateDomainRecommendation(intel, activeDomain);
                 setAiInsight(recommendation);
             }
 
@@ -1448,7 +1377,7 @@ const App: React.FC = () => {
                     <div>
                         <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Analysis Domain</div>
                         <div className="flex bg-slate-100 p-1 rounded-2xl gap-1">
-                            {([{ id: 'gym', emoji: '🏋️', label: 'Gym' }, { id: 'restaurant', emoji: '🍽️', label: 'Restaurants' }, { id: 'bank', emoji: '🏦', label: 'Banks' }] as const).map(d => (
+                            {([{ id: 'gym', emoji: '🏋️', label: 'Gym' }, { id: 'restaurant', emoji: '🍽️', label: 'Restaurants' }, { id: 'bank', emoji: '🏦', label: 'Banks' }, { id: 'retail', emoji: '🛍️', label: 'Retail' }] as const).map(d => (
                                 <button
                                     key={d.id}
                                     onClick={() => setActiveDomain(d.id)}
