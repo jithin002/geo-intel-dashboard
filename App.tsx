@@ -9,7 +9,7 @@ import { getSiteGuidance, GroundingSource, answerFreeform, conversationalQuery }
 import './services/leaflet-heat'; // Local vendored version used
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, Tooltip, LabelList } from 'recharts';
 import { getLocationIntelligence, getDomainIntelligence, generateDataDrivenRecommendation, generateDomainRecommendation, PlaceResult, textSearch } from './services/placesAPIService';
-import { executeSearch, getQueryDescription } from './searchUtils';
+import { executeSearch, getQueryDescription, parseSearchIntent } from './searchUtils';
 import { DOMAIN_CONFIG, DomainId } from './domains';
 import { calculateDomainScores } from './services/scoringEngine';
 import { ChatInterface } from './components/ChatInterface';
@@ -237,9 +237,15 @@ const WardLayer = ({ onWardClick }: { onWardClick: (lat: number, lng: number, wa
 
 // Smart keyword shortcuts for the search bar autocomplete
 const SEARCH_KEYWORDS = [
+    // Analytical
     'top 3 spots', 'top 5 spots', 'top 10 spots',
     'low competition', 'high growth', 'untapped areas',
-    'best overall', 'high opportunity', 'no gyms nearby'
+    'best overall', 'high opportunity', 'no gyms nearby',
+    // Domain-aware cross-prompts
+    'gyms in', 'fitness in', 'exercise spots in',
+    'cafes in', 'restaurants in', 'food spots in',
+    'banks near', 'finance options in',
+    'retail in', 'shops in', 'supermarket near',
 ];
 
 const App: React.FC = () => {
@@ -359,7 +365,7 @@ const App: React.FC = () => {
         setMapZoom(14); // Zoom in for analysis
     }, []);
 
-    // NEW: Intelligent query search (supports natural language)
+    // NEW: Intelligent query search (supports natural language + domain detection)
     const handlePlaceSearch = useCallback(async (query: string) => {
         if (!query) {
             setSearchResults([]);
@@ -378,18 +384,31 @@ const App: React.FC = () => {
             return;
         }
 
+        // ── Domain Intent Detection ──────────────────────────────────────────
+        const intent = parseSearchIntent(query);
+        let effectiveQuery = query;
+
+        if (intent.hasDomain && intent.domain) {
+            console.log(`🎯 Domain detected: "${intent.domain}" | Location: "${intent.locationQuery}"`);
+            setActiveDomain(intent.domain);
+            effectiveQuery = intent.locationQuery || query;
+        }
+
         try {
-            // 1. Try internal ward/cluster search first
-            const results = executeSearch(query, wardClusters, wardScores);
+            // 1. Try internal ward/cluster search first (using cleaned location query)
+            const results = executeSearch(effectiveQuery, wardClusters, wardScores);
 
             if (results.length > 0) {
-                const description = getQueryDescription(query);
+                const description = getQueryDescription(effectiveQuery);
+                const domainNote = intent.hasDomain
+                    ? ` (switched to ${intent.domain} analysis)`
+                    : '';
+
                 console.log(`🔍 Query: "${query}"`);
                 console.log(`📊 Found ${results.length} results`);
-                console.log(`ℹ️ ${description}`);
 
                 setSearchResults(results);
-                setQueryDescription(description);
+                setQueryDescription(description + domainNote);
 
                 // If single result, zoom to it automatically
                 if (results.length === 1) {
@@ -403,10 +422,21 @@ const App: React.FC = () => {
             }
 
             // 2. Fallback: External Place Search (Nominatim) -> then Google Places textSearch
-            setQueryDescription(`Searching map for "${query}"...`);
-            console.log(`🌍 Searching external map for: ${query}`);
+            //    Use the cleaned location query so Nominatim doesn't get confused by domain words
+            const geoQuery = intent.hasDomain && intent.locationQuery
+                ? intent.locationQuery
+                : query;
 
-            const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query + ", Bangalore")}`);
+            setQueryDescription(
+                intent.hasDomain
+                    ? `Switching to ${intent.domain} mode · Searching "${geoQuery}"...`
+                    : `Searching map for "${geoQuery}"...`
+            );
+            console.log(`🌍 Searching external map for: ${geoQuery}`);
+
+            const response = await fetch(
+                `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(geoQuery + ", Bangalore")}`
+            );
             const data = await response.json();
 
             if (data && data.length > 0) {
@@ -416,32 +446,37 @@ const App: React.FC = () => {
 
                 console.log(`📍 Found external place: ${place.display_name}`);
 
-                // Clear internal results
                 setSearchResults([]);
-
-                // Set location and trigger analysis
                 setSelectedPos([lat, lng]);
                 setSelectedCluster(null);
                 setSelectedWard(null);
                 setMapZoom(14);
-                setQueryDescription(`Found: ${place.display_name.split(',')[0]}`);
+
+                const placeName = place.display_name.split(',')[0];
+                setQueryDescription(
+                    intent.hasDomain
+                        ? `📍 ${placeName} · ${intent.domain} mode active`
+                        : `Found: ${placeName}`
+                );
             } else {
                 // If Nominatim fails, try Google Places Text Search for richer data
                 console.log('🔎 Nominatim returned no results; trying Google Places Text Search');
-                const places = await textSearch(query);
+                const places = await textSearch(geoQuery);
 
                 if (places && places.length > 0) {
                     setSearchResults(places);
-                    setQueryDescription(`Found ${places.length} place(s) from Google Places for "${query}"`);
-                    // Center map on first result
+                    setQueryDescription(
+                        `Found ${places.length} place(s) from Google Places for "${geoQuery}"` +
+                        (intent.hasDomain ? ` · ${intent.domain} mode active` : '')
+                    );
                     const first = places[0];
                     if (first.location && first.location.lat && first.location.lng) {
                         setSelectedPos([first.location.lat, first.location.lng]);
                         setMapZoom(14);
                     }
                 } else {
-                    setQueryDescription(`No results found for "${query}"`);
-                    alert(`Location "${query}" not found.`);
+                    setQueryDescription(`No results found for "${geoQuery}"`);
+                    alert(`Location "${geoQuery}" not found.`);
                 }
             }
 
