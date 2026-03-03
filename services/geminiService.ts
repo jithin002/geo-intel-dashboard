@@ -121,7 +121,7 @@ export const generateAdvanced = async (prompt: string, options?: {
       config: cfg
     });
 
-    const text = (response && (response.text || response.outputText)) || (response?.candidates?.[0]?.content?.[0]?.text) || '';
+    const text = (response?.text) || (response?.candidates?.[0]?.content?.[0]?.text) || '';
 
     // Extract grounding sources if present
     const sources: GroundingSource[] = [];

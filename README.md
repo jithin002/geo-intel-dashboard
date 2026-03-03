@@ -115,25 +115,13 @@ gym-locate_-geo-intel-dashboard/
 
 ## 📝 Environment Variables
 
-Create a `.env.local` file by copying `.env.example` and filling in the values:
+Create a `.env.local` file with:
 
 ```bash
-cp .env.example .env.local
-# then edit .env.local and add your real keys
+GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
 ```
 
-The project uses Vite environment variables which must be prefixed with `VITE_`.
-Example keys used by this repo:
-
-```bash
-VITE_GEMINI_API_KEY=your_gemini_api_key_here
-VITE_API_KEY=your_optional_api_key_here  # optional fallback used in some code paths
-VITE_GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
-# For node scripts (tools/test_gemini.mjs) that read process.env
-GEMINI_API_KEY=your_gemini_api_key_here
-```
-
-**Security**: Never commit `.env.local` (or any `.env*`) to version control!
+**Security**: Never commit `.env.local` to version control!
 
 ## 🐛 Troubleshooting
 

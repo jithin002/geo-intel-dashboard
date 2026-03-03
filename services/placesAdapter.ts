@@ -1,12 +1,12 @@
 import { nearbySearch, PlaceResult } from './placesAPIService';
-import { POIDomainId, DOMAINS } from '../domains';
+import { DomainId, DOMAINS_LIST } from '../domains';
 
-type POIMap = Record<POIDomainId, PlaceResult[]>;
+type POIMap = Record<DomainId, PlaceResult[]>;
 
 /** Map domains to Google place types (from domains config) */
-export const mapDomainToPlaceTypes = (domainId: POIDomainId): string[] => {
-  const d = DOMAINS.find(x => x.id === domainId);
-  return d ? d.googlePlaceTypes : [];
+export const mapDomainToPlaceTypes = (domainId: DomainId): string[] => {
+  const d = DOMAINS_LIST.find(x => x.id === domainId);
+  return d ? d.competitorTypes : [];
 };
 
 /**
@@ -17,7 +17,7 @@ export async function getPOIsForDomains(
   lat: number,
   lng: number,
   radiusMeters: number,
-  domains: POIDomainId[]
+  domains: DomainId[]
 ): Promise<POIMap> {
   const tasks = domains.map(async (d) => {
     const types = mapDomainToPlaceTypes(d);

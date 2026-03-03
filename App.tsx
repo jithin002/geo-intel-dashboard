@@ -7,13 +7,14 @@ import { LocationType, ScoringMatrix } from './types';
 import { calculateSuitability } from './services/geoService';
 import { getSiteGuidance, GroundingSource, answerFreeform, conversationalQuery } from './services/geminiService';
 import './services/leaflet-heat'; // Local vendored version used
-import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, Tooltip } from 'recharts';
-import { getLocationIntelligence, generateDataDrivenRecommendation, PlaceResult, textSearch } from './services/placesAPIService';
-import { executeSearch, getQueryDescription } from './searchUtils';
-import { DOMAIN_CONFIG, DOMAINS_LIST, DomainId } from './domains';
-import { getDomainIntelligence, generateDomainRecommendation, DomainLocationIntelligence } from './services/placesAPIService';
+import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, Tooltip, LabelList } from 'recharts';
+import { getLocationIntelligence, getDomainIntelligence, generateDataDrivenRecommendation, generateDomainRecommendation, PlaceResult, textSearch } from './services/placesAPIService';
+import { executeSearch, getQueryDescription, parseSearchIntent } from './searchUtils';
+import { DOMAIN_CONFIG, DomainId } from './domains';
+import { calculateDomainScores } from './services/scoringEngine';
 import { ChatInterface } from './components/ChatInterface';
 import { addMessage, loadConversationHistory, clearConversationHistory, getRecentContext, extractLocationMentions, Message } from './services/conversationService';
+import { processUserQuery } from './services/chatOrchestrationService';
 
 /**
  * GYM-LOCATE: Geo-Intel Command Center (v8)
@@ -26,9 +27,19 @@ const gymIcon = new L.Icon({
     iconSize: [26, 26],
     className: 'drop-shadow-md'
 });
+const restaurantIcon = new L.Icon({
+    iconUrl: 'https://cdn-icons-png.flaticon.com/512/3448/3448609.png', // Fork & knife
+    iconSize: [26, 26],
+    className: 'drop-shadow-md'
+});
+const bankIcon = new L.Icon({
+    iconUrl: 'https://cdn-icons-png.flaticon.com/512/2830/2830284.png', // Bank building
+    iconSize: [26, 26],
+    className: 'drop-shadow-md'
+});
 const synergyIcon = new L.Icon({
-    iconUrl: 'https://cdn-icons-png.flaticon.com/512/924/924514.png', // Coffee cup
-    iconSize: [22, 22],
+    iconUrl: 'https://cdn-icons-png.flaticon.com/512/3054/3054889.png', // Coffee
+    iconSize: [20, 20],
 });
 const corporateIcon = new L.Icon({
     iconUrl: 'https://cdn-icons-png.flaticon.com/512/3061/3061341.png', // Office Building
@@ -46,18 +57,19 @@ const metroIcon = new L.Icon({
     iconUrl: 'https://cdn-icons-png.flaticon.com/512/565/565350.png', // Train
     iconSize: [20, 20],
 });
-const restaurantIcon = new L.DivIcon({
-    html: '<div style="background:#f59e0b;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:17px;box-shadow:0 3px 8px rgba(0,0,0,0.35);border:2.5px solid #fff;">🍽️</div>',
-    className: '',
-    iconSize: [32, 32],
-    iconAnchor: [16, 16],
+const busIcon = new L.Icon({
+    iconUrl: 'https://cdn-icons-png.flaticon.com/128/1178/1178850.png', // Bus
+    iconSize: [18, 18],
 });
-const bankIcon = new L.DivIcon({
-    html: '<div style="background:#2563eb;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:17px;box-shadow:0 3px 8px rgba(0,0,0,0.35);border:2.5px solid #fff;">🏦</div>',
-    className: '',
-    iconSize: [32, 32],
-    iconAnchor: [16, 16],
-});
+
+// Domain → competitor icon mapping
+const DOMAIN_ICON_MAP = {
+    gym: { icon: gymIcon, emoji: '🏋️', infraEmoji: '☕', infraLabel: 'LIFESTYLE' },
+    restaurant: { icon: restaurantIcon, emoji: '🍽️', infraEmoji: '🛍️', infraLabel: 'FOOTFALL' },
+    bank: { icon: bankIcon, emoji: '🏦', infraEmoji: '🏬', infraLabel: 'COMMERCIAL' },
+    retail: { icon: synergyIcon, emoji: '🛍️', infraEmoji: '🍿', infraLabel: 'SYNERGY' }
+};
+
 const getIconForType = (type: LocationType) => {
     switch (type) {
         case LocationType.GYM: return gymIcon;
@@ -223,6 +235,19 @@ const WardLayer = ({ onWardClick }: { onWardClick: (lat: number, lng: number, wa
     );
 };
 
+// Smart keyword shortcuts for the search bar autocomplete
+const SEARCH_KEYWORDS = [
+    // Analytical
+    'top 3 spots', 'top 5 spots', 'top 10 spots',
+    'low competition', 'high growth', 'untapped areas',
+    'best overall', 'high opportunity', 'no gyms nearby',
+    // Domain-aware cross-prompts
+    'gyms in', 'fitness in', 'exercise spots in',
+    'cafes in', 'restaurants in', 'food spots in',
+    'banks near', 'finance options in',
+    'retail in', 'shops in', 'supermarket near',
+];
+
 const App: React.FC = () => {
     const [selectedPos, setSelectedPos] = useState<[number, number] | null>(null);
     const [searchRadius, setSearchRadius] = useState<number>(1000);
@@ -235,7 +260,6 @@ const App: React.FC = () => {
     const [selectedWard, setSelectedWard] = useState<string | null>(null);
     const [mapZoom, setMapZoom] = useState<number>(11); // Start zoomed out
     const [searchQuery, setSearchQuery] = useState<string>(''); // Place search query
-    const [isListening, setIsListening] = useState(false); // Voice search state
 
     // NEW: Dynamic ward clusters loaded from CSV
     const [wardClusters, setWardClusters] = useState<any[]>([]);
@@ -258,8 +282,34 @@ const App: React.FC = () => {
     const [conversationMessages, setConversationMessages] = useState<Message[]>([]);
     const [isAITyping, setIsAITyping] = useState(false);
 
-    // Track last analyzed position to prevent redundant API calls
-    const lastAnalyzedPosRef = useRef<string>('');
+    // VOICE + AUTOCOMPLETE: Search bar enhancements
+    const [isSearchListening, setIsSearchListening] = useState(false);
+    const [searchSuggestions, setSearchSuggestions] = useState<string[]>([]);
+    const [suggestionIndex, setSuggestionIndex] = useState(-1);
+    const searchRecognitionRef = useRef<any>(null);
+    const searchInputRef = useRef<HTMLInputElement>(null);
+
+    // DOMAIN: Active analysis domain (gym / restaurant / bank)
+    const [activeDomain, setActiveDomain] = useState<DomainId>('gym');
+
+
+    // AUTOCOMPLETE: Compute suggestions whenever searchQuery changes
+    const updateSearchSuggestions = useCallback((q: string) => {
+        if (!q || q.length < 1) {
+            setSearchSuggestions([]);
+            setSuggestionIndex(-1);
+            return;
+        }
+        const lower = q.toLowerCase();
+        const wardMatches = wardClusters
+            .filter((w: any) => w.wardName.toLowerCase().includes(lower))
+            .slice(0, 5)
+            .map((w: any) => w.wardName);
+        const keywordMatches = SEARCH_KEYWORDS.filter(k => k.includes(lower));
+        const combined = [...new Set([...wardMatches, ...keywordMatches])].slice(0, 6);
+        setSearchSuggestions(combined);
+        setSuggestionIndex(-1);
+    }, [wardClusters]);
 
     // Render helper: display search results list
     const SearchResultsPanel = () => {
@@ -294,10 +344,6 @@ const App: React.FC = () => {
         apartments: PlaceResult[]; // NEW: Apartments/residential complexes
     }>({ gyms: [], cafes: [], parks: [], corporates: [], transit: [], apartments: [] });
 
-    // Active analysis domain (single-select)
-    const [activeDomain, setActiveDomain] = useState<DomainId>('gym');
-    const [domainIntel, setDomainIntel] = useState<DomainLocationIntelligence | null>(null);
-
     const handleMapClick = useCallback((e: any) => {
         const { lat, lng } = e.latlng;
         setSelectedPos([lat, lng]);
@@ -316,10 +362,10 @@ const App: React.FC = () => {
         setSelectedPos([lat, lng]);
         setSelectedWard(wardName);
         setSelectedCluster(null);
-        setMapZoom(15); // Zoom in for analysis
+        setMapZoom(14); // Zoom in for analysis
     }, []);
 
-    // NEW: Intelligent query search (supports natural language)
+    // NEW: Intelligent query search (supports natural language + domain detection)
     const handlePlaceSearch = useCallback(async (query: string) => {
         if (!query) {
             setSearchResults([]);
@@ -328,42 +374,41 @@ const App: React.FC = () => {
         }
 
         // Detect if the user input is a freeform question (natural language QA)
-        const isQuestion = /\?|^what\b|^where\b|^how\b|^is\b|^are\b|^who\b|^when\b|^which\b/i.test(query.trim());
+        const isQuestion = /\?|^what\b|^where\b|^how\b|^is\b|^are\b|^who\b|^when\b|^which\b|^tell\b|^show\b/i.test(query.trim());
+
         if (isQuestion) {
-            try {
-                setIsAnalyzing(true);
-                setAiInsight('Answering question...');
+            console.log("🗣️ Conversational query detected, routing to chat:", query);
+            setChatOpen(true);
+            setSearchQuery('');
+            handleUserMessage(query);
+            return;
+        }
 
-                // Try to gather some context from Places first
-                const places = await textSearch(query);
+        // ── Domain Intent Detection ──────────────────────────────────────────
+        const intent = parseSearchIntent(query);
+        let effectiveQuery = query;
 
-                // If selected position exists, pass it too
-                const [lat, lng] = selectedPos || [undefined, undefined];
-                const answer = await answerFreeform(query, lat as any, lng as any, places || []);
-
-                setAiInsight(answer);
-                setIsAnalyzing(false);
-                return;
-            } catch (err) {
-                console.error('AI question handling failed:', err);
-                setAiInsight('Failed to answer question.');
-                setIsAnalyzing(false);
-                return;
-            }
+        if (intent.hasDomain && intent.domain) {
+            console.log(`🎯 Domain detected: "${intent.domain}" | Location: "${intent.locationQuery}"`);
+            setActiveDomain(intent.domain);
+            effectiveQuery = intent.locationQuery || query;
         }
 
         try {
-            // 1. Try internal ward/cluster search first
-            const results = executeSearch(query, wardClusters, wardScores);
+            // 1. Try internal ward/cluster search first (using cleaned location query)
+            const results = executeSearch(effectiveQuery, wardClusters, wardScores);
 
             if (results.length > 0) {
-                const description = getQueryDescription(query);
+                const description = getQueryDescription(effectiveQuery);
+                const domainNote = intent.hasDomain
+                    ? ` (switched to ${intent.domain} analysis)`
+                    : '';
+
                 console.log(`🔍 Query: "${query}"`);
                 console.log(`📊 Found ${results.length} results`);
-                console.log(`ℹ️ ${description}`);
 
                 setSearchResults(results);
-                setQueryDescription(description);
+                setQueryDescription(description + domainNote);
 
                 // If single result, zoom to it automatically
                 if (results.length === 1) {
@@ -371,16 +416,27 @@ const App: React.FC = () => {
                     setSelectedPos([ward.lat, ward.lng]);
                     setSelectedCluster(ward.id);
                     setSelectedWard(null);
-                    setMapZoom(15);
+                    setMapZoom(14);
                 }
                 return;
             }
 
             // 2. Fallback: External Place Search (Nominatim) -> then Google Places textSearch
-            setQueryDescription(`Searching map for "${query}"...`);
-            console.log(`🌍 Searching external map for: ${query}`);
+            //    Use the cleaned location query so Nominatim doesn't get confused by domain words
+            const geoQuery = intent.hasDomain && intent.locationQuery
+                ? intent.locationQuery
+                : query;
 
-            const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query + ", Bangalore")}`);
+            setQueryDescription(
+                intent.hasDomain
+                    ? `Switching to ${intent.domain} mode · Searching "${geoQuery}"...`
+                    : `Searching map for "${geoQuery}"...`
+            );
+            console.log(`🌍 Searching external map for: ${geoQuery}`);
+
+            const response = await fetch(
+                `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(geoQuery + ", Bangalore")}`
+            );
             const data = await response.json();
 
             if (data && data.length > 0) {
@@ -390,32 +446,37 @@ const App: React.FC = () => {
 
                 console.log(`📍 Found external place: ${place.display_name}`);
 
-                // Clear internal results
                 setSearchResults([]);
-
-                // Set location and trigger analysis
                 setSelectedPos([lat, lng]);
                 setSelectedCluster(null);
                 setSelectedWard(null);
-                setMapZoom(15);
-                setQueryDescription(`Found: ${place.display_name.split(',')[0]}`);
+                setMapZoom(14);
+
+                const placeName = place.display_name.split(',')[0];
+                setQueryDescription(
+                    intent.hasDomain
+                        ? `📍 ${placeName} · ${intent.domain} mode active`
+                        : `Found: ${placeName}`
+                );
             } else {
                 // If Nominatim fails, try Google Places Text Search for richer data
                 console.log('🔎 Nominatim returned no results; trying Google Places Text Search');
-                const places = await textSearch(query);
+                const places = await textSearch(geoQuery);
 
                 if (places && places.length > 0) {
                     setSearchResults(places);
-                    setQueryDescription(`Found ${places.length} place(s) from Google Places for "${query}"`);
-                    // Center map on first result
+                    setQueryDescription(
+                        `Found ${places.length} place(s) from Google Places for "${geoQuery}"` +
+                        (intent.hasDomain ? ` · ${intent.domain} mode active` : '')
+                    );
                     const first = places[0];
                     if (first.location && first.location.lat && first.location.lng) {
                         setSelectedPos([first.location.lat, first.location.lng]);
-                        setMapZoom(15);
+                        setMapZoom(14);
                     }
                 } else {
-                    setQueryDescription(`No results found for "${query}"`);
-                    alert(`Location "${query}" not found.`);
+                    setQueryDescription(`No results found for "${geoQuery}"`);
+                    alert(`Location "${geoQuery}" not found.`);
                 }
             }
 
@@ -425,32 +486,46 @@ const App: React.FC = () => {
         }
     }, [wardClusters, wardScores]);
 
-    // VOICE SEARCH: Handle speech recognition
-    const handleVoiceSearch = useCallback(() => {
+    // VOICE: Toggle search bar microphone (placed after handlePlaceSearch to avoid forward-reference)
+    const toggleSearchListening = useCallback(() => {
         const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-        
-        if (!SpeechRecognition) {
-            alert('Voice search is not supported in this browser.');
+        if (!SpeechRecognition) return;
+
+        if (isSearchListening) {
+            searchRecognitionRef.current?.stop();
+            setIsSearchListening(false);
             return;
         }
 
         const recognition = new SpeechRecognition();
-        recognition.lang = 'en-US';
-        recognition.interimResults = false;
-        recognition.maxAlternatives = 1;
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.lang = 'en-IN';
 
-        recognition.onstart = () => setIsListening(true);
-        recognition.onerror = () => setIsListening(false);
-        recognition.onend = () => setIsListening(false);
+        recognition.onstart = () => setIsSearchListening(true);
 
         recognition.onresult = (event: any) => {
-            const transcript = event.results[0][0].transcript;
-            setSearchQuery(transcript);
-            handlePlaceSearch(transcript);
+            let interim = '';
+            let final = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const t = event.results[i][0].transcript;
+                if (event.results[i].isFinal) { final += t; }
+                else { interim += t; }
+            }
+            if (final) {
+                setSearchQuery(final.trim());
+                handlePlaceSearch(final.trim());
+            } else if (interim) {
+                setSearchQuery(interim);
+            }
         };
 
+        recognition.onerror = () => setIsSearchListening(false);
+        recognition.onend = () => setIsSearchListening(false);
+
+        searchRecognitionRef.current = recognition;
         recognition.start();
-    }, [handlePlaceSearch]);
+    }, [isSearchListening, handlePlaceSearch]);
 
     // Load ward clusters from CSV on mount
     useEffect(() => {
@@ -515,9 +590,16 @@ const App: React.FC = () => {
         setAiInsight('Fetching real POI data from Google Places...');
 
         try {
+            const domain = DOMAIN_CONFIG[activeDomain];
+
             if (activeDomain === 'gym') {
-                // ── GYM: existing analysis path (unchanged) ──────────────────────
-                const intel = await getLocationIntelligence(selectedPos[0], selectedPos[1], searchRadius);
+                // ── GYM DOMAIN: Our advanced V2 scoring ─────────────────────
+                const intel = await getLocationIntelligence(
+                    selectedPos[0],
+                    selectedPos[1],
+                    searchRadius
+                );
+
                 setRealPOIs({
                     gyms: intel.gyms.places,
                     cafes: intel.cafesRestaurants.places,
@@ -526,139 +608,68 @@ const App: React.FC = () => {
                     apartments: intel.apartments.places,
                     parks: []
                 });
-                setDomainIntel(null);
 
-                const realScores = {
-                    demographicLoad: Math.min(100,
-                        15 + (intel.corporateOffices.total * 6) +
-                        (intel.apartments.total * 4) + (intel.cafesRestaurants.total * 2)
-                    ),
-                    connectivity: Math.min(100, 10 + (intel.transitStations.total * 15)),
-                    competitorRatio: intel.marketGap === 'UNTAPPED' ? 100 :
-                        intel.marketGap === 'OPPORTUNITY' ? 75 :
-                        intel.marketGap === 'COMPETITIVE' ? 50 : 25,
-                    infrastructure: Math.min(100, 10 + (intel.cafesRestaurants.total * 5)),
-                    total: 0
-                };
-                realScores.total = Math.round(
-                    realScores.demographicLoad * 0.30 + realScores.connectivity * 0.15 +
-                    realScores.competitorRatio * 0.30 + realScores.infrastructure * 0.25
-                );
-                console.log(`📊 GYM SCORE: ${realScores.total}/100`);
+                const realScores = calculateDomainScores(intel, activeDomain, searchRadius);
+
+                console.log('📊 SCORING V2 (GYM):', realScores);
                 setScores(realScores);
 
                 if (selectedCluster) {
-                    const opp = realScores.total / 100;
-                    let gr = intel.marketGap === 'UNTAPPED' ? 0.15 : intel.marketGap === 'OPPORTUNITY' ? 0.10 :
-                        intel.marketGap === 'COMPETITIVE' ? 0.05 : 0.02;
-                    if (realScores.demographicLoad > 70) gr += 0.03;
-                    if (intel.corporateOffices.total > 10) gr += 0.02;
-                    setWardScores(prev => ({ ...prev, [selectedCluster]: {
-                        opportunityScore: opp, finalScore: opp, growthRate: gr,
-                        demographicLoad: realScores.demographicLoad, competitorDensity: intel.gyms.total
-                    }}));
+                    const opportunityScore = realScores.total / 100;
+                    const finalScore = opportunityScore;
+                    const demographicLoad = realScores.demographicLoad;
+                    const competitorDensity = intel.gyms.total;
+                    let growthRate = 0;
+                    if (intel.marketGap === 'UNTAPPED') growthRate = 0.15;
+                    else if (intel.marketGap === 'OPPORTUNITY') growthRate = 0.10;
+                    else if (intel.marketGap === 'COMPETITIVE') growthRate = 0.05;
+                    else growthRate = 0.02;
+                    if (demographicLoad > 70) growthRate += 0.03;
+                    if (intel.corporateOffices.total > 10) growthRate += 0.02;
+                    setWardScores(prev => ({ ...prev, [selectedCluster]: { opportunityScore, finalScore, growthRate, demographicLoad, competitorDensity } }));
                 }
-                setAiInsight(generateDataDrivenRecommendation(intel));
+
+                const recommendation = generateDataDrivenRecommendation(intel, realScores);
+                setAiInsight(recommendation);
 
             } else {
-                // ── RESTAURANT / BANK: domain-aware path ─────────────────────────
-                const cfg = DOMAIN_CONFIG[activeDomain];
+                // ── RESTAURANT / BANK DOMAIN: Generic domain intelligence ────
                 const intel = await getDomainIntelligence(
-                    selectedPos[0], selectedPos[1], searchRadius,
-                    cfg.competitorTypes, cfg.infraTypes
+                    selectedPos[0],
+                    selectedPos[1],
+                    searchRadius,
+                    domain.competitorTypes,
+                    domain.infraTypes
                 );
-                setDomainIntel(intel);
-                // Clear gym-specific POIs so their markers disappear
-                setRealPOIs({ gyms: [], cafes: [], parks: [], corporates: [], transit: [], apartments: [] });
 
-                const { scoring } = cfg;
-                let demand = 0, connectivity = 0, gap = 0, infra = 0;
+                // Show competitor markers on map (use gyms slot for domain competitors)
+                setRealPOIs({
+                    gyms: intel.competitors.places,        // competitor markers
+                    cafes: intel.infraSynergy.places,      // infra/synergy markers
+                    corporates: intel.corporateOffices.places,
+                    transit: intel.transitStations.places,
+                    apartments: intel.apartments.places,
+                    parks: []
+                });
 
-                if (activeDomain === 'restaurant') {
-                    const compCount  = intel.competitors.total;
-                    const avgRating  = intel.competitors.averageRating;
-                    const offices    = intel.corporateOffices.total;
-                    const apartments = intel.apartments.total;
-                    const transit    = intel.transitStations.total;
-                    const infraCount = intel.infraSynergy.total;
+                // Domain-specific scoring using dynamically loaded engine
+                const realScores = calculateDomainScores(intel, activeDomain, searchRadius);
 
-                    // ── PRINCIPLE: each raw signal feeds exactly ONE parameter ──
-                    // Offices + Apartments → Footfall (they eat regularly)
-                    // InfraSynergy        → Dest Pull (magnets that bring visitors)
-                    // Transit             → Access (gated by demand — useless alone)
-                    // Competitors + above → Gap (opportunity relative to demand)
-
-                    // ── FOOTFALL (40%) ──────────────────────────────────────────
-                    // Only people who are consistently in the area: offices & apartments.
-                    // Infra (malls/colleges) adds a smaller contribution for captive visitors.
-                    demand = Math.min(100,
-                        offices    * 12 +   // reliable lunch crowd
-                        apartments * 8  +   // reliable dinner crowd
-                        infraCount * 4      // mall-goers / hotel guests / students
-                        // transit NOT here — it's the Access parameter
-                    );
-
-                    // ── ACCESS (15%) ────────────────────────────────────────────
-                    // Transit is only valuable when PEOPLE are already present.
-                    // Gate: if demand=0 (no one around), transit contributes < 15%.
-                    // demandGate 0→0.15, 40→1.0 — scales with actual footfall.
-                    const demandGate = demand > 0 ? Math.min(1.0, demand / 40) : 0;
-                    connectivity = Math.round(Math.min(100, transit * 15) * (0.15 + demandGate * 0.85));
-
-                    // ── DINING GAP (20%) ────────────────────────────────────────
-                    // Gap = demand × uncaptured share.
-                    // → Forest (demand=0): gap = 0, regardless of 0 competitors.
-                    // → Busy area, low competition: gap is high.
-                    // → Busy area, many strong competitors: gap is low.
-                    const capacity    = Math.max(2, (offices + apartments) * 3 + infraCount * 1.5);
-                    const saturation  = Math.min(1, compCount / capacity);
-                    const qualityMult = compCount > 0 && avgRating > 0 ? avgRating / 5 : 0.5;
-                    const effectiveSat = saturation * (0.4 + qualityMult * 0.6);
-                    gap = Math.round(demand * (1 - effectiveSat));
-
-                    // ── DEST PULL (25%) ─────────────────────────────────────────
-                    // Malls / cinemas / universities / hotels — pure magnet score.
-                    // No infra = 0. Each magnet contributes independently.
-                    infra = Math.min(100, infraCount * 14);
-
-                    console.log(`🍽️ inputs  → offices:${offices} apts:${apartments} transit:${transit} infra:${infraCount} comps:${compCount} avgRating:${avgRating} capacity:${capacity.toFixed(1)}`);
-                    console.log(`🍽️ scores  → footfall:${demand} access:${connectivity} gap:${gap} destPull:${infra} | total≈${Math.round(demand*0.4+connectivity*0.15+gap*0.2+infra*0.25)}`);
-                } else { // bank
-                    // Pop (40%): corporates (employee banking) + residents (retail banking)
-                    demand       = Math.min(100, 15 + (intel.corporateOffices.total * 8) + (intel.apartments.total * 5));
-                    // Access (25%): transit + commercial density drives branch footfall
-                    connectivity = Math.min(100, 10 + (intel.transitStations.total * 12) + (intel.infraSynergy.total * 3));
-                    // Bank Gap (20%): competition count + quality adjustment
-                    const bankBaseGap = intel.marketGap === 'UNTAPPED' ? 100 : intel.marketGap === 'OPPORTUNITY' ? 75 : intel.marketGap === 'COMPETITIVE' ? 50 : 25;
-                    const bankHighRatedRatio = intel.competitors.highRated / Math.max(intel.competitors.total, 1);
-                    const bankAvgRating = intel.competitors.averageRating;
-                    // Well-rated bank branches = established trust → harder to displace → penalty up to -10
-                    const bankQualityPenalty = Math.round(bankHighRatedRatio * 10);
-                    // Low-rated banks = customer dissatisfaction = your opening → bonus up to +8
-                    const bankQualityBonus = (bankAvgRating > 0 && bankAvgRating < 3.5) ? 8 : 0;
-                    gap = Math.min(100, Math.max(15, bankBaseGap + bankQualityBonus - bankQualityPenalty));
-                    // Commercial (15%): retail density drives ATM/branch need
-                    infra        = Math.min(100, 10 + (intel.infraSynergy.total * 5));
-                }
-                const total = Math.round(
-                    demand * scoring.demand.weight + connectivity * scoring.connectivity.weight +
-                    gap * scoring.gap.weight + infra * scoring.infra.weight
-                );
-                console.log(`📊 ${cfg.label.toUpperCase()} SCORE: ${total}/100`);
-                setScores({ demographicLoad: demand, connectivity, competitorRatio: gap, infrastructure: infra, total });
+                console.log(`📊 SCORING (${domain.label}):`, realScores);
+                setScores(realScores);
 
                 if (selectedCluster) {
-                    const opp = total / 100;
-                    let gr = intel.marketGap === 'UNTAPPED' ? 0.15 : intel.marketGap === 'OPPORTUNITY' ? 0.10 :
-                        intel.marketGap === 'COMPETITIVE' ? 0.05 : 0.02;
-                    if (demand > 70) gr += 0.03;
-                    if (intel.corporateOffices.total > 10) gr += 0.02;
-                    setWardScores(prev => ({ ...prev, [selectedCluster]: {
-                        opportunityScore: opp, finalScore: opp, growthRate: gr,
-                        demographicLoad: demand, competitorDensity: intel.competitors.total
-                    }}));
+                    const opportunityScore = realScores.total / 100;
+                    const finalScore = opportunityScore;
+                    let growthRate = intel.marketGap === 'UNTAPPED' ? 0.15 :
+                        intel.marketGap === 'OPPORTUNITY' ? 0.10 :
+                            intel.marketGap === 'COMPETITIVE' ? 0.05 : 0.02;
+                    if (realScores.demographicLoad > 70) growthRate += 0.03;
+                    setWardScores(prev => ({ ...prev, [selectedCluster]: { opportunityScore, finalScore, growthRate, demographicLoad: realScores.demographicLoad, competitorDensity: intel.competitors.total } }));
                 }
-                setAiInsight(generateDomainRecommendation(intel, cfg.competitorLabel));
+
+                const recommendation = generateDomainRecommendation(intel, activeDomain);
+                setAiInsight(recommendation);
             }
 
             setIsAnalyzing(false);
@@ -669,29 +680,22 @@ const App: React.FC = () => {
             setScores(fallbackScores);
             setIsAnalyzing(false);
         }
-    }, [selectedPos, searchRadius, activeDomain, selectedCluster]);
+    }, [selectedPos, activeDomain, searchRadius, selectedCluster]);
 
-    // AUTOMATIC ANALYSIS with safeguard (debounce + distance-check)
+    // ✅ Debounced analysis — prevents burst requests on rapid clicks
+    const analysisDebounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
     useEffect(() => {
-        if (!selectedPos) return;
-        
-        // Simple key to determine if we've already analyzed this exact spot/radius
-        // Rounding to 4 decimals (~10m) to catch small map adjustments
-        const posKey = `${selectedPos[0].toFixed(4)},${selectedPos[1].toFixed(4)},${searchRadius},${activeDomain}`;
-        
-        if (lastAnalyzedPosRef.current === posKey) {
-            console.log('⚡ Skipping redundant analysis (Already cached for this spot)');
-            return;
+        if (selectedPos) {
+            if (analysisDebounceRef.current) clearTimeout(analysisDebounceRef.current);
+            analysisDebounceRef.current = setTimeout(() => {
+                performAnalysis();
+            }, 500);
         }
-
-        const timer = setTimeout(() => {
-            console.log('🤖 Triggering automatic analysis for:', posKey);
-            lastAnalyzedPosRef.current = posKey;
-            performAnalysis();
-        }, 1000); // 1-second debounce to prevent spamming during map movement
-
-        return () => clearTimeout(timer);
-    }, [selectedPos, searchRadius, activeDomain, performAnalysis]);
+        return () => {
+            if (analysisDebounceRef.current) clearTimeout(analysisDebounceRef.current);
+        };
+    }, [selectedPos, activeDomain, performAnalysis]);
 
     const catchmentOverlap = useMemo(() => {
         if (!selectedPos) return [];
@@ -708,23 +712,19 @@ const App: React.FC = () => {
         });
     }, [selectedPos, searchRadius]);
 
-    // Domain-aware POI counts
-    const domainConfig = DOMAIN_CONFIG[activeDomain];
-    const competitors = activeDomain === 'gym'
-        ? realPOIs.gyms.length
-        : (domainIntel?.competitors.total || 0);
-    const demandGenerators = activeDomain === 'gym'
-        ? realPOIs.corporates.length + realPOIs.cafes.length
-        : (domainIntel ? domainIntel.corporateOffices.total + domainIntel.apartments.total : 0);
+    // UPDATED: Use real POI data from Google Places API instead of mock data
+    const competitors = realPOIs.gyms.length;
+    const domain = DOMAIN_CONFIG[activeDomain];
+    const demandGenerators = realPOIs.corporates.length + realPOIs.cafes.length;
 
     const chartData = useMemo(() => {
         if (!scores) return [];
-        const { scoring } = DOMAIN_CONFIG[activeDomain];
+        const d = DOMAIN_CONFIG[activeDomain].scoring;
         return [
-            { name: scoring.demand.label,       score: scores.demographicLoad,  color: scoring.demand.color,       desc: scoring.demand.desc },
-            { name: scoring.connectivity.label, score: scores.connectivity,     color: scoring.connectivity.color, desc: scoring.connectivity.desc },
-            { name: scoring.gap.label,          score: scores.competitorRatio,  color: scoring.gap.color,          desc: scoring.gap.desc },
-            { name: scoring.infra.label,        score: scores.infrastructure,   color: scoring.infra.color,        desc: scoring.infra.desc },
+            { name: d.demand.label, score: scores.demographicLoad, color: d.demand.color, desc: d.demand.desc },
+            { name: d.connectivity.label, score: scores.connectivity, color: d.connectivity.color, desc: d.connectivity.desc },
+            { name: d.gap.label, score: scores.competitorRatio, color: d.gap.color, desc: d.gap.desc },
+            { name: d.infra.label, score: scores.infrastructure, color: d.infra.color, desc: d.infra.desc },
         ];
     }, [scores, activeDomain]);
 
@@ -736,7 +736,7 @@ const App: React.FC = () => {
         return { text: "RISKY", color: "text-red-400" };
     };
 
-    // CHAT: Handle user messages
+    // CHAT: Handle user messages with agentic orchestration
     const handleUserMessage = useCallback(async (message: string) => {
         // Add user message to conversation
         const updatedMessages = addMessage(
@@ -752,74 +752,20 @@ const App: React.FC = () => {
         setIsAITyping(true);
 
         try {
-            // Check if message contains ward mentions
-            const mentions = extractLocationMentions(message, wardClusters);
+            // ============================================
+            // AGENTIC FLOW: Use chat orchestration service
+            // ============================================
 
-            // If user mentions a ward, navigate to it
-            if (mentions.length > 0) {
-                const mentionedWard = wardClusters.find(
-                    w => w.wardName.toLowerCase() === mentions[0].toLowerCase()
-                );
-                if (mentionedWard) {
-                    console.log(`📍 Navigating to mentioned ward: ${mentionedWard.wardName}`);
-                    setSelectedPos([mentionedWard.lat, mentionedWard.lng]);
-                    setSelectedCluster(mentionedWard.id);
-                    setSelectedWard(mentionedWard.wardName);
-                    setMapZoom(15);
+            console.log('🚀 Starting agentic flow for:', message);
 
-                    // Trigger analysis after short delay to allow state to update
-                    setTimeout(() => {
-                        performAnalysis();
-                    }, 300);
-                }
-            }
-
-            // Check if this is a search query (top X, high growth, etc.)
-            const isSearchQuery = message.toLowerCase().match(/top \d+|high growth|untapped|low competition|opportunity/);
-            if (isSearchQuery) {
-                const results = executeSearch(message, wardClusters, wardScores);
-                if (results.length > 0) {
-                    setSearchResults(results);
-                    const description = getQueryDescription(message);
-                    setQueryDescription(description);
-
-                    // Auto-zoom to first result if specific query
-                    if (results.length === 1) {
-                        const ward = results[0];
-                        setSelectedPos([ward.lat, ward.lng]);
-                        setSelectedCluster(ward.id);
-                        setSelectedWard(ward.wardName);
-                        setMapZoom(15);
-
-                        // Trigger analysis after state update
-                        setTimeout(() => {
-                            performAnalysis();
-                        }, 300);
-                    }
-
-                    // AI response for search
-                    let aiResponse = `I found ${results.length} area(s) matching your query.\n\n`;
-                    results.slice(0, 5).forEach((r, idx) => {
-                        const score = ((r.finalScore || r.opportunityScore || 0) * 100).toFixed(0);
-                        aiResponse += `${idx + 1}. **${r.wardName}** - Score: ${score}%\n`;
-                    });
-                    aiResponse += `\nClick on any area in the results panel to analyze it in detail.`;
-
-                    const finalMessages = addMessage(updatedMessages, 'assistant', aiResponse);
-                    setConversationMessages(finalMessages);
-                    setIsAITyping(false);
-                    return;
-                }
-            }
-
-            // Build context for conversational query
+            // Build conversation context
             const recentContext = getRecentContext(updatedMessages).map(msg => ({
                 role: msg.role,
                 content: msg.content
             }));
 
-            // Call conversational query
-            const response = await conversationalQuery(message, {
+            // Call orchestration service (Gemini + Places API coordination)
+            const response = await processUserQuery(message, {
                 recentMessages: recentContext,
                 currentLocation: selectedPos || undefined,
                 selectedWard: selectedWard || undefined,
@@ -828,53 +774,76 @@ const App: React.FC = () => {
                 wardClusters
             });
 
-            console.log(`💬 Conversational response (Gemini: ${response.usedGemini})`);
+            console.log(`✅ Agentic response: Gemini=${response.usedGemini}, Places=${response.usedPlacesAPI}`);
 
-            // Execute dashboard action if present
-            if (response.action) {
-                switch (response.action.type) {
-                    case 'navigate':
-                        if (response.action.payload.location) {
-                            setSelectedPos(response.action.payload.location);
-                            setMapZoom(response.action.payload.zoom || 15);
-                            // Trigger analysis after navigation
-                            setTimeout(() => {
-                                performAnalysis();
-                            }, 300);
-                        }
-                        break;
-                    case 'search':
-                        if (response.action.payload.query) {
-                            await handlePlaceSearch(response.action.payload.query);
-                        }
-                        break;
+            // ============================================
+            // TRIGGER EXISTING FRAMEWORK FLOW
+            // Execute map actions (zoom, navigate, analyze)
+            // ============================================
+
+            if (response.mapAction) {
+                const action = response.mapAction;
+                console.log('🗺️ Executing map action:', action.type);
+
+                switch (action.type) {
                     case 'analyze':
-                        // Trigger analysis
-                        await performAnalysis();
-                        break;
-                    case 'zoom':
-                        if (response.action.payload.zoom) {
-                            setMapZoom(response.action.payload.zoom);
+                    case 'navigate':
+                        if (action.payload.location) {
+                            setSelectedPos(action.payload.location);
+                            setMapZoom(action.payload.zoom || 14);
+
+                            if (action.payload.wardName) {
+                                setSelectedWard(action.payload.wardName);
+                            }
+
+                            if (action.payload.triggerAnalysis) {
+                                if (response.prefetchedIntel) {
+                                    // ✅ Chat already fetched intel — apply directly, skip re-fetch
+                                    console.log('♻️ Using prefetchedIntel — skipping performAnalysis()');
+                                    const intel = response.prefetchedIntel;
+                                    setRealPOIs({
+                                        gyms: intel.gyms?.places || [],
+                                        cafes: intel.cafesRestaurants?.places || [],
+                                        corporates: intel.corporateOffices?.places || [],
+                                        transit: intel.transitStations?.places || [],
+                                        apartments: intel.apartments?.places || [],
+                                        parks: []
+                                    });
+                                } else {
+                                    // Fallback: trigger fresh analysis
+                                    console.log('🔍 Triggering performAnalysis() — no prefetchedIntel');
+                                    setTimeout(() => { performAnalysis(); }, 300);
+                                }
+                            }
                         }
+                        break;
+
+                    case 'zoom':
+                        if (action.payload.zoom) setMapZoom(action.payload.zoom);
+                        break;
+
+                    case 'highlight':
+                        console.log('Highlighting:', action.payload.poiType);
                         break;
                 }
             }
 
             // Add AI response to conversation
-            const finalMessages = addMessage(updatedMessages, 'assistant', response.response);
+            const finalMessages = addMessage(updatedMessages, 'assistant', response.text);
             setConversationMessages(finalMessages);
+
         } catch (error) {
-            console.error('Chat error:', error);
+            console.error('❌ Agentic chat error:', error);
             const errorMessages = addMessage(
                 updatedMessages,
                 'assistant',
-                'Sorry, I encountered an error. Please try again.'
+                'Sorry, I encountered an error processing your request. Please try again.'
             );
             setConversationMessages(errorMessages);
         } finally {
             setIsAITyping(false);
         }
-    }, [conversationMessages, selectedPos, selectedWard, scores, realPOIs, wardClusters, wardScores]);
+    }, [conversationMessages, selectedPos, selectedWard, scores, realPOIs, wardClusters, performAnalysis]);
 
     // Clear chat history
     const handleClearChat = useCallback(() => {
@@ -882,59 +851,13 @@ const App: React.FC = () => {
         setConversationMessages([]);
     }, []);
 
+    const [showRightSidebar, setShowRightSidebar] = useState(true);
+
     return (
-        <div className="flex flex-col lg:flex-row h-[100dvh] w-full bg-slate-100 overflow-hidden font-sans">
+        <div className="relative h-[100dvh] w-[100vw] bg-slate-100 overflow-hidden font-sans">
 
-            {/* 1. Map Interaction Area */}
-            <div className="order-1 lg:order-2 flex-1 relative h-[45vh] lg:h-full w-full">
-
-                {/* Floating Search Bar */}
-                <div className="absolute top-1.5 left-1/2 -translate-x-1/2 z-[1100] w-[95%] max-w-lg">
-                    <div className="flex items-center gap-2 bg-white/95 backdrop-blur-md shadow-2xl border border-white/80 rounded-2xl px-3 py-1.5">
-                        <span className="text-slate-400 text-sm pl-1">🔍</span>
-                        <input
-                            type="text"
-                            placeholder='Search ward, area or ask a question...'
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            onKeyPress={(e) => {
-                                if (e.key === 'Enter') handlePlaceSearch(searchQuery.trim());
-                            }}
-                            className="flex-1 bg-transparent text-[11px] font-bold text-slate-700 focus:outline-none placeholder:text-slate-400 placeholder:font-normal py-1"
-                        />
-                        {searchQuery && (
-                            <button
-                                onClick={() => { setSearchQuery(''); setSearchResults([]); setQueryDescription(''); }}
-                                className="text-slate-300 hover:text-slate-500 transition-colors text-sm leading-none px-1"
-                            >✕</button>
-                        )}
-                        <button
-                            onClick={handleVoiceSearch}
-                            className={`p-1.5 rounded-full transition-all ${
-                                isListening 
-                                ? 'bg-red-50 text-red-600 animate-pulse ring-2 ring-red-300' 
-                                : 'text-slate-400 hover:bg-slate-100 hover:text-indigo-600'
-                            }`}
-                            title="Voice Search"
-                        >
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                            </svg>
-                        </button>
-                        <button
-                            onClick={() => handlePlaceSearch(searchQuery.trim())}
-                            className="px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-[9px] font-black rounded-xl hover:shadow-lg transition-all uppercase tracking-wider whitespace-nowrap"
-                        >
-                            Search
-                        </button>
-                    </div>
-                    {/* Inline results dropdown */}
-                    {queryDescription && (
-                        <div className="mt-0.5 px-3 py-0.5 text-[9px] font-bold text-indigo-700 bg-indigo-50/90 backdrop-blur-sm border border-indigo-100 rounded-lg shadow-sm">{queryDescription}</div>
-                    )}
-                </div>
-
-                {/* Domain filter removed (reverted) */}
+            {/* 1. Full Screen Map Area */}
+            <div className="absolute inset-0 z-0">
                 <MapContainer center={[BANGALORE_CENTER.lat, BANGALORE_CENTER.lng]} zoom={mapZoom} className="z-10 h-full w-full">
                     <TileLayer
                         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -964,180 +887,47 @@ const App: React.FC = () => {
                         />
                     )}
 
-                    {selectedPos && (() => {
-                        // Derive growth rate the same way performAnalysis does for wardScores
-                        const estGrowthRate = scores
-                            ? (scores.competitorRatio > 75 ? 15 : scores.competitorRatio > 55 ? 10 : scores.competitorRatio > 30 ? 5 : 2)
-                              + (scores.demographicLoad > 70 ? 3 : 0)
-                              + (activeDomain === 'gym' ? (realPOIs.corporates.length > 10 ? 2 : 0) : (domainIntel && domainIntel.corporateOffices.total > 10 ? 2 : 0))
-                            : 0;
-                        const locationName = selectedWard || wardClusters.find(c => c.id === selectedCluster)?.wardName || 'Custom Point';
-                        const locationSub  = selectedCluster
-                            ? `Ward ID: ${wardClusters.find(c => c.id === selectedCluster)?.wardId}`
-                            : selectedWard
-                            ? `Ward: ${selectedWard}`
-                            : `${selectedPos[0].toFixed(4)}, ${selectedPos[1].toFixed(4)}`;
+                    {selectedPos && (
+                        <Marker position={selectedPos} icon={new L.DivIcon({
+                            className: 'user-marker',
+                            html: `<div class="relative flex items-center justify-center">
+                                     <div class="absolute w-12 h-12 bg-indigo-600/10 rounded-full animate-pulse"></div>
+                                     <div class="w-6 h-6 bg-indigo-600 border-[3px] border-white rounded-full shadow-2xl"></div>
+                                   </div>`,
+                            iconSize: [48, 48],
+                            iconAnchor: [24, 24]
+                        })} />
+                    )}
 
+
+                    {/* REAL POI Markers from Google Places API — domain-aware icon */}
+                    {selectedPos && realPOIs.gyms.length > 0 && realPOIs.gyms.map((gym, idx) => {
+                        const domainMeta = DOMAIN_ICON_MAP[activeDomain];
                         return (
-                            <Marker
-                                key={`sel-${selectedPos[0].toFixed(5)}-${selectedPos[1].toFixed(5)}`}
-                                position={selectedPos}
-                                icon={new L.DivIcon({
-                                    className: 'user-marker',
-                                    html: `<div class="relative flex items-center justify-center">
-                                             <div class="absolute w-12 h-12 bg-indigo-600/10 rounded-full animate-pulse"></div>
-                                             <div class="w-6 h-6 bg-indigo-600 border-[3px] border-white rounded-full shadow-2xl"></div>
-                                           </div>`,
-                                    iconSize: [48, 48],
-                                    iconAnchor: [24, 24]
-                                })}
-                                eventHandlers={{
-                                    add: (e) => { setTimeout(() => (e.target as any).openPopup(), 1000); }
-                                }}
-                            >
-                                <Popup maxWidth={260} autoPan={true} autoPanPadding={[50, 120]}>
-                                    <div className="p-2 min-w-[190px]">
-                                        {/* Title — same style as cluster */}
-                                        <div className="font-black text-slate-900 text-sm mb-0.5">
-                                            {domainConfig.emoji} {locationName}
-                                        </div>
-                                        <div className="text-[9px] text-slate-500 mb-2">{locationSub}</div>
-
-                                        {/* Status badge */}
-                                        {scores && !isAnalyzing && (
-                                            <div className="mb-1.5 px-2 py-0.5 bg-emerald-50 border border-emerald-200 rounded-md">
-                                                <span className="text-[8px] font-black text-emerald-700 uppercase">✓ Live Calculated</span>
+                            <Marker key={`competitor-${idx}`} position={[gym.location.lat, gym.location.lng]} icon={domainMeta.icon}>
+                                <Popup>
+                                    <div className="p-2 min-w-[180px]">
+                                        <div className="font-black text-slate-800 text-sm mb-1">{domainMeta.emoji} {gym.displayName}</div>
+                                        {gym.rating && (
+                                            <div className="flex items-center gap-1 mb-1">
+                                                <span className="text-yellow-500 text-xs">★</span>
+                                                <span className="text-xs font-bold">{gym.rating.toFixed(1)}</span>
+                                                {gym.userRatingCount && (
+                                                    <span className="text-[9px] text-slate-400">({gym.userRatingCount} reviews)</span>
+                                                )}
                                             </div>
                                         )}
-                                        {isAnalyzing && (
-                                            <div className="mb-1.5 px-2 py-0.5 bg-blue-50 border border-blue-200 rounded-md">
-                                                <span className="text-[8px] font-black text-blue-700 uppercase">⏳ Calculating...</span>
-                                            </div>
-                                        )}
-                                        {!scores && !isAnalyzing && (
-                                            <div className="mb-1.5 px-2 py-0.5 bg-amber-50 border border-amber-200 rounded-md">
-                                                <span className="text-[8px] font-black text-amber-700 uppercase">📊 Static Data</span>
-                                            </div>
-                                        )}
-
-                                        {/* Rows — exactly match cluster popup */}
-                                        <div className="space-y-1 mb-2">
-                                            <div className="flex justify-between items-center">
-                                                <span className="text-[8px] font-bold text-slate-600 uppercase">Opp. Score</span>
-                                                <span className="text-[10px] font-black text-indigo-600">
-                                                    {scores ? `${scores.total.toFixed(1)}%` : '--'}
-                                                </span>
-                                            </div>
-                                            <div className="flex justify-between items-center">
-                                                <span className="text-[8px] font-bold text-slate-600 uppercase">Final Score</span>
-                                                <span className="text-[10px] font-black text-emerald-600">
-                                                    {scores ? `${scores.total.toFixed(1)}%` : '--'}
-                                                </span>
-                                            </div>
-                                            <div className="flex justify-between items-center">
-                                                <span className="text-[8px] font-bold text-slate-600 uppercase">Growth Rate</span>
-                                                <span className="text-[10px] font-black text-emerald-600">
-                                                    {scores ? `+${estGrowthRate.toFixed(1)}%` : '--'}
-                                                </span>
-                                            </div>
-
-                                            {/* GYM domain */}
-                                            {activeDomain === 'gym' && (
-                                                <>
-                                                    <div className="flex justify-between items-center">
-                                                        <span className="text-[8px] font-bold text-slate-600 uppercase">Gyms</span>
-                                                        <span className="text-[10px] font-black text-slate-700">{realPOIs.gyms.length}</span>
-                                                    </div>
-                                                    <div className="flex justify-between items-center">
-                                                        <span className="text-[8px] font-bold text-slate-600 uppercase">Lifestyle</span>
-                                                        <span className="text-[10px] font-black text-slate-700">{realPOIs.cafes.length}</span>
-                                                    </div>
-                                                    <div className="flex justify-between items-center">
-                                                        <span className="text-[8px] font-bold text-slate-600 uppercase">Corporate</span>
-                                                        <span className="text-[10px] font-black text-blue-600">{realPOIs.corporates.length}</span>
-                                                    </div>
-                                                    <div className="flex justify-between items-center">
-                                                        <span className="text-[8px] font-bold text-slate-600 uppercase">Apartments</span>
-                                                        <span className="text-[10px] font-black text-purple-600">{realPOIs.apartments.length}</span>
-                                                    </div>
-                                                </>
-                                            )}
-
-                                            {/* RESTAURANT domain */}
-                                            {activeDomain === 'restaurant' && domainIntel && (
-                                                <>
-                                                    <div className="flex justify-between items-center">
-                                                        <span className="text-[8px] font-bold text-slate-600 uppercase">Restaurants</span>
-                                                        <span className="text-[10px] font-black text-slate-700">{domainIntel.competitors.total}</span>
-                                                    </div>
-                                                    <div className="flex justify-between items-center">
-                                                        <span className="text-[8px] font-bold text-slate-600 uppercase">Corporate</span>
-                                                        <span className="text-[10px] font-black text-blue-600">{domainIntel.corporateOffices.total}</span>
-                                                    </div>
-                                                    <div className="flex justify-between items-center">
-                                                        <span className="text-[8px] font-bold text-slate-600 uppercase">Apartments</span>
-                                                        <span className="text-[10px] font-black text-purple-600">{domainIntel.apartments.total}</span>
-                                                    </div>
-                                                </>
-                                            )}
-
-                                            {/* BANK domain */}
-                                            {activeDomain === 'bank' && domainIntel && (
-                                                <>
-                                                    <div className="flex justify-between items-center">
-                                                        <span className="text-[8px] font-bold text-slate-600 uppercase">Banks</span>
-                                                        <span className="text-[10px] font-black text-slate-700">{domainIntel.competitors.total}</span>
-                                                    </div>
-                                                    <div className="flex justify-between items-center">
-                                                        <span className="text-[8px] font-bold text-slate-600 uppercase">Corporate</span>
-                                                        <span className="text-[10px] font-black text-blue-600">{domainIntel.corporateOffices.total}</span>
-                                                    </div>
-                                                    <div className="flex justify-between items-center">
-                                                        <span className="text-[8px] font-bold text-slate-600 uppercase">Apartments</span>
-                                                        <span className="text-[10px] font-black text-purple-600">{domainIntel.apartments.total}</span>
-                                                    </div>
-                                                </>
-                                            )}
-                                        </div>
-
-                                        <button
-                                            onClick={performAnalysis}
-                                            className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-[9px] font-black py-1.5 px-3 rounded-lg hover:shadow-lg transition-all uppercase tracking-wider"
-                                        >
-                                            📊 Analyze Area
-                                        </button>
+                                        <span className="text-[9px] font-bold text-white px-2 py-0.5 rounded-full uppercase tracking-widest bg-red-500">COMPETITOR</span>
+                                        {gym.formattedAddress && <div className="mt-2 text-[9px] text-slate-500 italic border-t pt-1">{gym.formattedAddress}</div>}
                                     </div>
                                 </Popup>
                             </Marker>
                         );
-                    })()}
-
-
-                    {/* REAL POI Markers from Google Places API */}
-                    {selectedPos && realPOIs.gyms.length > 0 && realPOIs.gyms.map((gym, idx) => (
-                        <Marker key={`gym-${idx}`} position={[gym.location.lat, gym.location.lng]} icon={gymIcon}>
-                            <Popup autoPanPadding={[50, 120]}>
-                                <div className="p-2 min-w-[180px]">
-                                    <div className="font-black text-slate-800 text-sm mb-1">🏋️ {gym.displayName}</div>
-                                    {gym.rating && (
-                                        <div className="flex items-center gap-1 mb-1">
-                                            <span className="text-yellow-500 text-xs">★</span>
-                                            <span className="text-xs font-bold">{gym.rating.toFixed(1)}</span>
-                                            {gym.userRatingCount && (
-                                                <span className="text-[9px] text-slate-400">({gym.userRatingCount} reviews)</span>
-                                            )}
-                                        </div>
-                                    )}
-                                    <span className="text-[9px] font-bold text-white px-2 py-0.5 rounded-full uppercase tracking-widest bg-red-500">COMPETITOR</span>
-                                    {gym.formattedAddress && <div className="mt-2 text-[9px] text-slate-500 italic border-t pt-1">{gym.formattedAddress}</div>}
-                                </div>
-                            </Popup>
-                        </Marker>
-                    ))}
+                    })}
 
                     {selectedPos && realPOIs.corporates.length > 0 && realPOIs.corporates.map((corp, idx) => (
                         <Marker key={`corp-${idx}`} position={[corp.location.lat, corp.location.lng]} icon={corporateIcon}>
-                            <Popup autoPanPadding={[50, 120]}>
+                            <Popup>
                                 <div className="p-2 min-w-[160px]">
                                     <div className="font-black text-slate-800 text-sm mb-1">🏢 {corp.displayName}</div>
                                     {corp.rating && (
@@ -1156,7 +946,7 @@ const App: React.FC = () => {
                     {/* Apartment Markers */}
                     {selectedPos && realPOIs.apartments && realPOIs.apartments.length > 0 && realPOIs.apartments.map((apt, idx) => (
                         <Marker key={`apt-${idx}`} position={[apt.location.lat, apt.location.lng]} icon={residentialIcon}>
-                            <Popup autoPanPadding={[50, 120]}>
+                            <Popup>
                                 <div className="p-2 min-w-[160px]">
                                     <div className="font-black text-slate-800 text-sm mb-1">🏘️ {apt.displayName}</div>
                                     {apt.rating && (
@@ -1176,92 +966,56 @@ const App: React.FC = () => {
 
                     {/* Parks removed - no longer fetched or displayed */}
 
-                    {/* Domain competitor markers (restaurant / bank) */}
-                    {activeDomain !== 'gym' && selectedPos && domainIntel && (
-                        <>
-                            {domainIntel.competitors.places.map((place, idx) => (
-                                <Marker key={`dc-${idx}`} position={[place.location.lat, place.location.lng]}
-                                    icon={activeDomain === 'restaurant' ? new L.DivIcon({
-                                        html: '<div style="background:#f59e0b;width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 2px 6px rgba(0,0,0,0.3);border:2px solid #fff;">☕</div>',
-                                        className: '',
-                                        iconSize: [30, 30],
-                                        iconAnchor: [15, 15],
-                                    }) : bankIcon}>
-                                    <Popup autoPanPadding={[50, 120]}>
-                                        <div className="p-2 min-w-[180px]">
-                                            <div className="font-black text-slate-800 text-sm mb-1">
-                                                {activeDomain === 'restaurant' ? '🍽️' : '🏦'} {place.displayName}
+
+                    {selectedPos && realPOIs.cafes.length > 0 && realPOIs.cafes.map((cafe, idx) => {
+                        const domainMeta = DOMAIN_ICON_MAP[activeDomain];
+                        return (
+                            <Marker key={`infra-${idx}`} position={[cafe.location.lat, cafe.location.lng]} icon={synergyIcon}>
+                                <Popup>
+                                    <div className="p-2 min-w-[160px]">
+                                        <div className="font-black text-slate-800 text-sm mb-1">{domainMeta.infraEmoji} {cafe.displayName}</div>
+                                        {cafe.rating && (
+                                            <div className="flex items-center gap-1 mb-1">
+                                                <span className="text-yellow-500 text-xs">★</span>
+                                                <span className="text-xs font-bold">{cafe.rating.toFixed(1)}</span>
+                                                {cafe.userRatingCount && (
+                                                    <span className="text-[9px] text-slate-400">({cafe.userRatingCount} reviews)</span>
+                                                )}
                                             </div>
-                                            {place.rating && (
-                                                <div className="flex items-center gap-1 mb-1">
-                                                    <span className="text-yellow-500 text-xs">★</span>
-                                                    <span className="text-xs font-bold">{place.rating.toFixed(1)}</span>
-                                                    {place.userRatingCount && <span className="text-[9px] text-slate-400">({place.userRatingCount})</span>}
-                                                </div>
-                                            )}
-                                            <span className="text-[9px] font-bold text-white px-2 py-0.5 rounded-full uppercase"
-                                                style={{ background: domainConfig.color }}>COMPETITOR</span>
-                                            {place.formattedAddress && <div className="mt-2 text-[9px] text-slate-500 italic border-t pt-1">{place.formattedAddress}</div>}
-                                        </div>
-                                    </Popup>
-                                </Marker>
-                            ))}
-                            {domainIntel.corporateOffices.places.map((corp, idx) => (
-                                <Marker key={`dco-${idx}`} position={[corp.location.lat, corp.location.lng]} icon={corporateIcon}>
-                                    <Popup autoPanPadding={[50, 120]}>
-                                        <div className="p-2 min-w-[160px]">
-                                            <div className="font-black text-slate-800 text-sm mb-1">🏢 {corp.displayName}</div>
-                                            <span className="text-[9px] font-bold text-white px-2 py-0.5 rounded-full uppercase bg-blue-500">DEMAND DRIVER</span>
-                                        </div>
-                                    </Popup>
-                                </Marker>
-                            ))}
-                            {domainIntel.transitStations.places.map((station, idx) => (
-                                <Marker key={`dts-${idx}`} position={[station.location.lat, station.location.lng]} icon={metroIcon}>
-                                    <Popup autoPanPadding={[50, 120]}>
-                                        <div className="p-2 min-w-[160px]">
-                                            <div className="font-black text-slate-800 text-sm mb-1">🚇 {station.displayName}</div>
-                                            <span className="text-[9px] font-bold text-white px-2 py-0.5 rounded-full uppercase bg-purple-500">TRANSIT</span>
-                                        </div>
-                                    </Popup>
-                                </Marker>
-                            ))}
-                        </>
-                    )}
+                                        )}
+                                        <span className="text-[9px] font-bold text-white px-2 py-0.5 rounded-full uppercase tracking-widest bg-amber-500">{domainMeta.infraLabel}</span>
+                                        {cafe.formattedAddress && <div className="mt-2 text-[9px] text-slate-500 italic border-t pt-1">{cafe.formattedAddress}</div>}
+                                    </div>
+                                </Popup>
+                            </Marker>
+                        );
+                    })}
 
+                    {/* Transit Markers — split metro vs bus */}
+                    {selectedPos && realPOIs.transit.length > 0 && realPOIs.transit.map((station, idx) => {
+                        const isMetro = station.types?.some((t: string) =>
+                            t.includes('subway') || t.includes('light_rail')
+                        );
+                        const isBus = station.types?.some((t: string) => t.includes('bus'));
+                        // Fallback: if types is empty, infer from name
+                        const nameHint = station.displayName?.toLowerCase() || '';
+                        const isBusByName = !isMetro && (nameHint.includes('bus') || nameHint.includes('stop') || nameHint.includes('stand'));
+                        const icon = isMetro ? metroIcon : busIcon;
+                        const label = isMetro ? '🚇 METRO' : '🚌 BUS';
+                        const badgeColor = isMetro ? 'bg-purple-500' : 'bg-orange-500';
+                        return (
+                            <Marker key={`transit-${idx}`} position={[station.location.lat, station.location.lng]} icon={icon}>
+                                <Popup>
+                                    <div className="p-2 min-w-[160px]">
+                                        <div className="font-black text-slate-800 text-sm mb-1">{label.split(' ')[0]} {station.displayName}</div>
+                                        <span className={`text-[9px] font-bold text-white px-2 py-0.5 rounded-full uppercase tracking-widest ${badgeColor}`}>{label}</span>
+                                        {station.formattedAddress && <div className="mt-2 text-[9px] text-slate-500 italic border-t pt-1">{station.formattedAddress}</div>}
+                                    </div>
+                                </Popup>
+                            </Marker>
+                        );
+                    })}
 
-                    {selectedPos && realPOIs.cafes.length > 0 && realPOIs.cafes.map((cafe, idx) => (
-                        <Marker key={`cafe-${idx}`} position={[cafe.location.lat, cafe.location.lng]} icon={synergyIcon}>
-                            <Popup autoPanPadding={[50, 120]}>
-                                <div className="p-2 min-w-[160px]">
-                                    <div className="font-black text-slate-800 text-sm mb-1">☕ {cafe.displayName}</div>
-                                    {cafe.rating && (
-                                        <div className="flex items-center gap-1 mb-1">
-                                            <span className="text-yellow-500 text-xs">★</span>
-                                            <span className="text-xs font-bold">{cafe.rating.toFixed(1)}</span>
-                                            {cafe.userRatingCount && (
-                                                <span className="text-[9px] text-slate-400">({cafe.userRatingCount} reviews)</span>
-                                            )}
-                                        </div>
-                                    )}
-                                    <span className="text-[9px] font-bold text-white px-2 py-0.5 rounded-full uppercase tracking-widest bg-amber-500">LIFESTYLE</span>
-                                    {cafe.formattedAddress && <div className="mt-2 text-[9px] text-slate-500 italic border-t pt-1">{cafe.formattedAddress}</div>}
-                                </div>
-                            </Popup>
-                        </Marker>
-                    ))}
-
-                    {selectedPos && realPOIs.transit.length > 0 && realPOIs.transit.map((station, idx) => (
-                        <Marker key={`transit-${idx}`} position={[station.location.lat, station.location.lng]} icon={metroIcon}>
-                            <Popup autoPanPadding={[50, 120]}>
-                                <div className="p-2 min-w-[160px]">
-                                    <div className="font-black text-slate-800 text-sm mb-1">🚇 {station.displayName}</div>
-                                    <span className="text-[9px] font-bold text-white px-2 py-0.5 rounded-full uppercase tracking-widest bg-purple-500">TRANSIT</span>
-                                    {station.formattedAddress && <div className="mt-2 text-[9px] text-slate-500 italic border-t pt-1">{station.formattedAddress}</div>}
-                                </div>
-                            </Popup>
-                        </Marker>
-                    ))}
 
                     {/* Ward Cluster Markers - Dynamically Loaded from CSV */}
                     {wardClusters.map(cluster => {
@@ -1298,69 +1052,69 @@ const App: React.FC = () => {
                                     click: () => handleClusterClick(cluster.id, cluster.lat, cluster.lng)
                                 }}
                             >
-                                <Popup autoPan={true} autoPanPadding={[50, 120]}>
-                                    <div className="p-2 min-w-[180px]">
-                                        <div className="font-black text-slate-900 text-sm mb-0.5">🎯 {cluster.wardName}</div>
-                                        <div className="text-[9px] text-slate-500 mb-2">Ward ID: {cluster.wardId}</div>
+                                <Popup>
+                                    <div className="p-3 min-w-[220px]">
+                                        <div className="font-black text-slate-900 text-base mb-1">🎯 {cluster.wardName}</div>
+                                        <div className="text-[10px] text-slate-500 mb-3">Ward ID: {cluster.wardId}</div>
 
                                         {isAnalyzed && wardScores[cluster.id] && (
-                                            <div className="mb-1.5 px-2 py-0.5 bg-emerald-50 border border-emerald-200 rounded-md">
-                                                <span className="text-[8px] font-black text-emerald-700 uppercase">✓ Live Calculated</span>
+                                            <div className="mb-2 px-2 py-1 bg-emerald-50 border border-emerald-200 rounded-md">
+                                                <span className="text-[9px] font-black text-emerald-700 uppercase">✓ Live Calculated</span>
                                             </div>
                                         )}
                                         {isAnalyzed && !wardScores[cluster.id] && (
-                                            <div className="mb-1.5 px-2 py-0.5 bg-blue-50 border border-blue-200 rounded-md">
-                                                <span className="text-[8px] font-black text-blue-700 uppercase">⏳ Calculating...</span>
+                                            <div className="mb-2 px-2 py-1 bg-blue-50 border border-blue-200 rounded-md">
+                                                <span className="text-[9px] font-black text-blue-700 uppercase">⏳ Calculating...</span>
                                             </div>
                                         )}
                                         {!isAnalyzed && (
-                                            <div className="mb-1.5 px-2 py-0.5 bg-amber-50 border border-amber-200 rounded-md">
-                                                <span className="text-[8px] font-black text-amber-700 uppercase">📊 Static Data</span>
+                                            <div className="mb-2 px-2 py-1 bg-amber-50 border border-amber-200 rounded-md">
+                                                <span className="text-[9px] font-black text-amber-700 uppercase">📊 Static Data</span>
                                             </div>
                                         )}
 
-                                        <div className="space-y-1 mb-2">
+                                        <div className="space-y-2 mb-3">
                                             <div className="flex justify-between items-center">
-                                                <span className="text-[8px] font-bold text-slate-600 uppercase">Opportunity Score</span>
-                                                <span className="text-[10px] font-black text-indigo-600">
+                                                <span className="text-[9px] font-bold text-slate-600 uppercase">Opportunity Score</span>
+                                                <span className="text-xs font-black text-indigo-600">
                                                     {wardScores[cluster.id]
                                                         ? (wardScores[cluster.id].opportunityScore * 100).toFixed(1)
                                                         : (cluster.opportunityScore * 100).toFixed(1)}%
                                                 </span>
                                             </div>
                                             <div className="flex justify-between items-center">
-                                                <span className="text-[8px] font-bold text-slate-600 uppercase">Final Score</span>
-                                                <span className="text-[10px] font-black text-emerald-600">
+                                                <span className="text-[9px] font-bold text-slate-600 uppercase">Final Score</span>
+                                                <span className="text-xs font-black text-emerald-600">
                                                     {wardScores[cluster.id]
                                                         ? (wardScores[cluster.id].finalScore * 100).toFixed(1)
                                                         : (cluster.finalScore * 100).toFixed(1)}%
                                                 </span>
                                             </div>
                                             <div className="flex justify-between items-center">
-                                                <span className="text-[8px] font-bold text-slate-600 uppercase">Growth Rate</span>
-                                                <span className="text-[10px] font-black text-emerald-600">
+                                                <span className="text-[9px] font-bold text-slate-600 uppercase">Growth Rate</span>
+                                                <span className="text-xs font-black text-emerald-600">
                                                     +{wardScores[cluster.id]
                                                         ? (wardScores[cluster.id].growthRate * 100).toFixed(1)
                                                         : (cluster.growthRate * 100).toFixed(1)}%
                                                 </span>
                                             </div>
                                             <div className="flex justify-between items-center">
-                                                <span className="text-[8px] font-bold text-slate-600 uppercase">Existing Gyms</span>
-                                                <span className="text-[10px] font-black text-slate-700">{displayGyms}</span>
+                                                <span className="text-[9px] font-bold text-slate-600 uppercase">Existing Gyms</span>
+                                                <span className="text-xs font-black text-slate-700">{displayGyms}</span>
                                             </div>
                                             <div className="flex justify-between items-center">
-                                                <span className="text-[8px] font-bold text-slate-600 uppercase">Cafes/Lifestyle</span>
-                                                <span className="text-[10px] font-black text-slate-700">{displayCafes}</span>
+                                                <span className="text-[9px] font-bold text-slate-600 uppercase">Cafes/Lifestyle</span>
+                                                <span className="text-xs font-black text-slate-700">{displayCafes}</span>
                                             </div>
                                             {isAnalyzed && (
                                                 <>
                                                     <div className="flex justify-between items-center">
-                                                        <span className="text-[8px] font-bold text-slate-600 uppercase">Corp. Offices</span>
-                                                        <span className="text-[10px] font-black text-blue-600">{displayCorporates}</span>
+                                                        <span className="text-[9px] font-bold text-slate-600 uppercase">Corporate Offices</span>
+                                                        <span className="text-xs font-black text-blue-600">{displayCorporates}</span>
                                                     </div>
                                                     <div className="flex justify-between items-center">
-                                                        <span className="text-[8px] font-bold text-slate-600 uppercase">Apartments</span>
-                                                        <span className="text-[10px] font-black text-purple-600">{displayApartments}</span>
+                                                        <span className="text-[9px] font-bold text-slate-600 uppercase">Apartments</span>
+                                                        <span className="text-xs font-black text-purple-600">{displayApartments}</span>
                                                     </div>
                                                 </>
                                             )}
@@ -1368,9 +1122,9 @@ const App: React.FC = () => {
 
                                         <button
                                             onClick={() => handleClusterClick(cluster.id, cluster.lat, cluster.lng)}
-                                            className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-[9px] font-black py-1.5 px-3 rounded-lg hover:shadow-lg transition-all uppercase tracking-wider"
+                                            className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-[10px] font-black py-2 px-3 rounded-lg hover:shadow-lg transition-all uppercase tracking-wider"
                                         >
-                                            📊 Analyze Area
+                                            📊 Analyze This Area
                                         </button>
                                     </div>
                                 </Popup>
@@ -1379,227 +1133,376 @@ const App: React.FC = () => {
                     })}
                 </MapContainer>
 
-                <div className="absolute bottom-4 left-4 right-4 lg:right-auto lg:bottom-5 lg:left-5 z-[1000] glass-panel px-3 py-2 lg:px-6 lg:py-3.5 rounded-xl lg:rounded-[2rem] shadow-xl border border-white/80 flex items-center gap-3 lg:gap-4">
-                    <div className="flex items-center justify-center w-7 h-7 lg:w-9 lg:h-9 rounded-lg lg:rounded-xl bg-slate-900 text-white shadow-lg">
-                        <span className="font-black text-[10px] lg:text-xs">{searchRadius < 1000 ? '500' : '1k'}</span>
+                {/* Legend */}
+                <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[40] pointer-events-none hidden md:block">
+                    <div className="bg-white/90 backdrop-blur-md px-4 py-2.5 rounded-[1.25rem] shadow-xl border border-white/80 pointer-events-auto flex items-center gap-4">
+                        <span className="text-[9px] font-black text-slate-800 uppercase tracking-widest border-r border-slate-200 pr-4">Legend</span>
+                        <div className="flex items-center gap-4">
+                            <div className="flex items-center gap-1.5" title={`${domain.competitorLabel} (Competitors)`}>
+                                <img src={DOMAIN_ICON_MAP[activeDomain].icon.options.iconUrl} className="w-4 h-4" alt="competitor" />
+                                <span className="text-[9px] text-slate-600 font-bold">{domain.competitorLabel}</span>
+                            </div>
+                            <div className="flex items-center gap-1.5" title="Corporate Offices">
+                                <img src="https://cdn-icons-png.flaticon.com/512/3061/3061341.png" className="w-4 h-4" alt="office" />
+                                <span className="text-[9px] text-slate-600 font-bold">Office</span>
+                            </div>
+                            <div className="flex items-center gap-1.5" title="Residential Zones">
+                                <img src="https://cdn-icons-png.flaticon.com/512/619/619032.png" className="w-4 h-4" alt="home" />
+                                <span className="text-[9px] text-slate-600 font-bold">Residential</span>
+                            </div>
+                            <div className="flex items-center gap-1.5" title="Metro Stations">
+                                <img src="https://cdn-icons-png.flaticon.com/512/565/565350.png" className="w-4 h-4" alt="metro" />
+                                <span className="text-[9px] text-slate-600 font-bold">Metro</span>
+                            </div>
+                            <div className="flex items-center gap-1.5" title="Bus Stops">
+                                <img src="https://cdn-icons-png.flaticon.com/512/3448/3448339.png" className="w-4 h-4" alt="bus" />
+                                <span className="text-[9px] text-slate-600 font-bold">Bus</span>
+                            </div>
+                            <div className="flex items-center gap-1.5 border-l border-slate-200 pl-4 ml-1">
+                                <div className="w-3 h-3 rounded-full bg-emerald-500 shadow-sm border border-emerald-600"></div>
+                                <span className="text-[9px] text-slate-600 font-bold">High Score</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                                <div className="w-3 h-3 rounded-full bg-amber-500 shadow-sm border border-amber-600"></div>
+                                <span className="text-[9px] text-slate-600 font-bold">Avg</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                                <div className="w-3 h-3 rounded-full bg-red-500 shadow-sm border border-red-600"></div>
+                                <span className="text-[9px] text-slate-600 font-bold">Low</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="absolute bottom-4 left-4 right-4 lg:right-auto lg:bottom-8 lg:left-8 z-[1000] glass-panel px-4 py-3 lg:px-8 lg:py-5 rounded-2xl lg:rounded-[2.5rem] shadow-2xl border border-white/80 flex items-center gap-3 lg:gap-5">
+                    <div className="flex items-center justify-center w-8 h-8 lg:w-12 lg:h-12 rounded-xl lg:rounded-2xl bg-slate-900 text-white shadow-xl">
+                        <span className="font-black text-xs lg:text-base">{searchRadius < 1000 ? '500' : '1k'}</span>
                     </div>
                     <div className="flex-1">
-                        <div className="text-[10px] lg:text-xs font-black text-slate-900 leading-tight">{domainConfig.emoji} {domainConfig.label} Analysis</div>
-                        <div className="text-[7px] lg:text-[9px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">Found: {competitors} {domainConfig.competitorLabel}, {demandGenerators} Generators</div>
+                        <div className="text-[11px] lg:text-sm font-black text-slate-900 leading-tight">Multi-Layer Scanning</div>
+                        <div className="text-[8px] lg:text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">
+                            Found: {competitors} {domain.competitorLabel}, {demandGenerators} Generators
+                        </div>
                     </div>
                 </div>
             </div>
 
-            {/* 2. Sidebar Control Panel */}
-            <div className="order-2 lg:order-1 w-full lg:w-[380px] h-full bg-white shadow-2xl flex flex-col z-20 p-4 md:p-5 overflow-y-auto custom-scrollbar border-t lg:border-t-0 lg:border-r border-slate-200">
-                <header className="mb-4 flex items-center justify-between">
-                    <div>
-                        <h1 className="text-xl lg:text-2xl font-black text-slate-900 tracking-tight flex items-center gap-1">
-                            Geo-Intel <span className="bg-indigo-600 text-white px-2 py-0.5 rounded-lg text-xs lg:text-sm">V8 PRO</span>
-                        </h1>
-                        {(selectedCluster || selectedWard) && (
-                            <div className="mt-1.5 inline-flex items-center gap-1 bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-200 px-2.5 py-1 rounded-full">
-                                <span className="text-[9px] font-black text-indigo-700">
-                                    📍 {selectedWard || wardClusters.find(c => c.id === selectedCluster)?.wardName}
-                                </span>
-                            </div>
-                        )}
-                    </div>
-                    <button
-                        onClick={() => setShowHeatmap(!showHeatmap)}
-                        className={`p-2.5 rounded-xl transition-all border ${showHeatmap ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-50 text-slate-400 border-slate-200'}`}
-                    >
-                        <svg className="w-5 h-5 lg:w-6 lg:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" /></svg>
-                    </button>
-                </header>
+            {/* ========================================== */}
+            {/* FLOATING UI ELEMENTS OVER THE MAP          */}
+            {/* ========================================== */}
 
-                <div className="space-y-4">
+            {/* TOP BAR: Title & Search (Dynamic & Floating) */}
+            <div className={`absolute top-4 z-30 w-[90vw] md:w-[600px] flex flex-col gap-2 pointer-events-none transition-all duration-500 ease-in-out ${showRightSidebar ? 'left-[calc(50%+160px)] -translate-x-1/2' : 'left-1/2 -translate-x-1/2'}`}>
+                {/* Search Bar Container */}
+                <div className="backdrop-blur-xl bg-white/80 shadow-2xl border border-white/50 rounded-2xl p-3 flex flex-col pointer-events-auto transition-all">
+                    <div className="flex items-center justify-between gap-3">
+                        {/* Brand / Logo Area */}
+                        <div className="flex-shrink-0 flex items-center gap-2">
+                            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-600 to-purple-600 flex items-center justify-center text-white font-black shadow-lg">G</div>
+                            <div className="hidden sm:block">
+                                <h1 className="text-sm font-black text-slate-900 tracking-tight leading-none">Geo-Intel <span className="text-indigo-600">V8</span></h1>
+                            </div>
+                        </div>
+
+                        {/* Search Input */}
+                        <div className="flex-1 relative">
+                            <input
+                                ref={searchInputRef}
+                                type="text"
+                                placeholder={isSearchListening ? '🎙️ Listening…' : 'Try: "top 3 spots" or ward name'}
+                                value={searchQuery}
+                                onChange={(e) => {
+                                    setSearchQuery(e.target.value);
+                                    updateSearchSuggestions(e.target.value);
+                                }}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'ArrowDown') {
+                                        e.preventDefault();
+                                        setSuggestionIndex(i => Math.min(i + 1, searchSuggestions.length - 1));
+                                    } else if (e.key === 'ArrowUp') {
+                                        e.preventDefault();
+                                        setSuggestionIndex(i => Math.max(i - 1, -1));
+                                    } else if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        const chosen = suggestionIndex >= 0 ? searchSuggestions[suggestionIndex] : searchQuery.trim();
+                                        if (chosen) {
+                                            setSearchQuery(chosen);
+                                            setSearchSuggestions([]);
+                                            setSuggestionIndex(-1);
+                                            handlePlaceSearch(chosen);
+                                        }
+                                    } else if (e.key === 'Escape') {
+                                        setSearchSuggestions([]);
+                                        setSuggestionIndex(-1);
+                                    }
+                                }}
+                                onBlur={() => setTimeout(() => { setSearchSuggestions([]); setSuggestionIndex(-1); }, 150)}
+                                className={`w-full pl-4 pr-20 py-2 text-sm font-bold text-slate-700 bg-white/50 border rounded-xl focus:bg-white focus:outline-none transition-all placeholder:font-normal shadow-inner ${isSearchListening ? 'border-red-300 bg-red-50/50 placeholder:text-red-400' : 'border-slate-200 focus:border-indigo-500 placeholder:text-slate-400'}`}
+                            />
+
+                            {/* Mic + Search buttons */}
+                            <div className="absolute right-1 top-1 bottom-1 flex gap-1">
+                                {((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) && (
+                                    <button
+                                        onClick={toggleSearchListening}
+                                        title={isSearchListening ? 'Stop listening' : 'Search by voice'}
+                                        className={`px-2 text-xs rounded-lg transition-all flex items-center justify-center ${isSearchListening ? 'bg-red-500 text-white animate-pulse' : 'bg-slate-100 text-slate-500 hover:bg-indigo-50 hover:text-indigo-600'}`}
+                                        aria-label={isSearchListening ? 'Stop voice search' : 'Voice search'}
+                                    >
+                                        {isSearchListening ? (
+                                            <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                                                <rect x="6" y="6" width="12" height="12" rx="2" />
+                                            </svg>
+                                        ) : (
+                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                                            </svg>
+                                        )}
+                                    </button>
+                                )}
+                                <button
+                                    onClick={() => { setSearchSuggestions([]); handlePlaceSearch(searchQuery.trim()); }}
+                                    className="px-3 bg-indigo-600 text-white text-xs font-black rounded-lg hover:shadow-lg transition-all"
+                                >
+                                    🔍
+                                </button>
+                            </div>
+
+                            {/* Autocomplete Dropdown */}
+                            {searchSuggestions.length > 0 && (
+                                <div className="absolute top-full left-0 right-0 mt-1.5 bg-white border border-slate-200 rounded-xl shadow-2xl z-50 overflow-hidden">
+                                    {searchSuggestions.map((s, idx) => {
+                                        const isWard = !SEARCH_KEYWORDS.includes(s);
+                                        return (
+                                            <div
+                                                key={s}
+                                                onMouseDown={() => {
+                                                    setSearchQuery(s);
+                                                    setSearchSuggestions([]);
+                                                    setSuggestionIndex(-1);
+                                                    handlePlaceSearch(s);
+                                                }}
+                                                className={`flex items-center gap-2 px-3 py-2 text-xs font-semibold cursor-pointer transition-colors ${idx === suggestionIndex ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700 hover:bg-slate-50'}`}
+                                            >
+                                                <span className="text-base">{isWard ? '📍' : '🔎'}</span>
+                                                <span>{s}</span>
+                                                {isWard && <span className="ml-auto text-[9px] text-slate-400 font-bold uppercase tracking-wide">Ward</span>}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+
+                {/* Search Results Dropdown */}
+                {searchResults.length > 0 && (
+                    <div className="backdrop-blur-xl bg-white/95 shadow-2xl border border-white/50 rounded-2xl p-3 pointer-events-auto animate-in slide-in-from-top-2 duration-300">
+                        <div className="flex justify-between items-center mb-2 px-1 border-b border-slate-100 pb-2">
+                            <span className="text-[10px] font-black text-slate-700 uppercase tracking-widest">{queryDescription}</span>
+                            <button onClick={() => { setSearchResults([]); setSearchQuery(''); }} className="text-[9px] text-slate-400 hover:text-red-500 font-bold transition-colors">CLEAR</button>
+                        </div>
+                        <div className="space-y-2 max-h-[40vh] overflow-y-auto custom-scrollbar pr-1">
+                            {/* Re-using exact same search result mapping logic */}
+                            {searchResults.map((item, idx) => {
+                                // If this looks like a Google Place result, render place card
+                                if (item && (item.displayName || item.formattedAddress || item.location)) {
+                                    const name = item.displayName?.text || item.displayName || item.display_name || item.id || `Place ${idx}`;
+                                    const rating = item.rating;
+                                    const address = item.formattedAddress || item.formatted_address || '';
+                                    return (
+                                        <div key={item.id || idx} className="group flex justify-between items-center p-3 bg-white border border-slate-100 rounded-xl hover:border-indigo-500 hover:shadow-lg transition-all cursor-pointer relative overflow-hidden">
+                                            <div className="pl-2" onClick={() => {
+                                                if (item.location && item.location.lat && item.location.lng) {
+                                                    setSelectedPos([item.location.lat, item.location.lng]);
+                                                    setMapZoom(16);
+                                                }
+                                            }}>
+                                                <div className="font-bold text-slate-800 text-xs group-hover:text-indigo-700 transition-colors">{name}</div>
+                                                {address && <div className="text-[9px] text-slate-400 font-medium mt-0.5">{address}</div>}
+                                            </div>
+                                            <div className="flex flex-col items-end gap-2">
+                                                {rating ? <div className="text-[10px] font-black text-slate-700">{rating.toFixed(1)} ★</div> : <div className="text-[9px] text-slate-400">No rating</div>}
+                                                <div className="flex gap-2">
+                                                    <button onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        if (item.location && item.location.lat && item.location.lng) {
+                                                            setSelectedPos([item.location.lat, item.location.lng]);
+                                                            setMapZoom(14);
+                                                        }
+                                                    }} className="px-3 py-1 text-[10px] font-black bg-indigo-50 text-indigo-700 rounded-lg border border-indigo-100">Center</button>
+                                                    <button onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        if (item.location && item.location.lat && item.location.lng) {
+                                                            setSelectedPos([item.location.lat, item.location.lng]);
+                                                            setSelectedCluster(null);
+                                                            setSelectedWard(null);
+                                                            setMapZoom(14);
+                                                        }
+                                                    }} className="px-3 py-1 text-[10px] font-black bg-emerald-50 text-emerald-700 rounded-lg border border-emerald-100">Analyze</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                }
+                                // Fallback map for internal clusters
+                                const ward = item as any;
+                                const scoreVal = ward.finalScore || ward.opportunityScore || 0;
+                                const scorePercentage = (scoreVal * 100).toFixed(1);
+                                let scoreColorClass = 'bg-slate-100 text-slate-600 border-slate-200';
+                                if (scoreVal > 0.8) scoreColorClass = 'bg-emerald-50 text-emerald-700 border-emerald-200';
+                                else if (scoreVal > 0.6) scoreColorClass = 'bg-indigo-50 text-indigo-700 border-indigo-200';
+                                else if (scoreVal > 0.4) scoreColorClass = 'bg-amber-50 text-amber-700 border-amber-200';
+                                else scoreColorClass = 'bg-red-50 text-red-700 border-red-200';
+                                return (
+                                    <div key={ward.id || idx} onClick={() => handleClusterClick(ward.id, ward.lat, ward.lng)} className="group flex justify-between items-center p-3 bg-white border border-slate-100 rounded-xl hover:border-indigo-500 hover:shadow-lg transition-all cursor-pointer relative overflow-hidden">
+                                        <div className="absolute left-0 top-0 bottom-0 w-1 bg-transparent group-hover:bg-indigo-500 transition-colors"></div>
+                                        <div className="pl-2">
+                                            <div className="font-bold text-slate-800 text-xs group-hover:text-indigo-700 transition-colors">{ward.wardName}</div>
+                                            <div className="text-[9px] text-slate-400 font-medium mt-0.5 flex items-center gap-1">
+                                                <span>ID: {ward.wardId}</span>
+                                                {ward.growthRate > 0 && <span className="text-emerald-600 font-bold bg-emerald-50 px-1 rounded">Growth: +{(ward.growthRate * 100).toFixed(0)}%</span>}
+                                            </div>
+                                        </div>
+                                        <div className={`px-2 py-1.5 rounded-lg border text-[10px] font-black ${scoreColorClass} shadow-sm`}>{scorePercentage}%</div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            {/* LEFT SIDEBAR: Intelligence Panel */}
+            <div className={`absolute left-0 top-0 bottom-0 w-[320px] max-w-[90vw] z-[40] transition-transform duration-500 ease-in-out flex flex-col pointer-events-none ${showRightSidebar ? 'translate-x-0' : '-translate-x-full'}`}>
+                {/* Toggle Button for Right Sidebar (attached to the edge) */}
+                <button
+                    onClick={() => setShowRightSidebar(!showRightSidebar)}
+                    className="absolute -right-10 top-1/2 -translate-y-1/2 bg-white/95 backdrop-blur pointer-events-auto p-1.5 rounded-r-xl shadow-[5px_0_15px_rgba(0,0,0,0.1)] border border-l-0 border-slate-200 text-slate-600 hover:text-indigo-600 transition-colors z-50 flex items-center justify-center"
+                >
+                    <svg className={`w-5 h-5 transition-transform ${showRightSidebar ? '' : 'rotate-180'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
+                    </svg>
+                </button>
+
+                {/* Sidebar Content Container */}
+                <div className="flex-1 bg-white/95 backdrop-blur-2xl shadow-[10px_0_30px_rgba(0,0,0,0.1)] rounded-r-[2rem] border-r border-slate-200/60 p-5 overflow-y-auto custom-scrollbar pointer-events-auto flex flex-col gap-5">
+                    <header className="flex items-center justify-between pb-3 border-b border-slate-200/50 pt-2">
+                        <div>
+                            <h2 className="text-lg font-black text-slate-900 tracking-tight">Intelligence Panel</h2>
+                            {(selectedCluster || selectedWard) ? (
+                                <div className="mt-1 inline-flex items-center gap-1.5 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-md">
+                                    <span className="text-[10px] font-black text-indigo-700">📍 {selectedWard || wardClusters.find(c => c.id === selectedCluster)?.wardName}</span>
+                                </div>
+                            ) : (
+                                <p className="text-[10px] font-bold text-slate-400 mt-1">Select an area to analyze</p>
+                            )}
+                        </div>
+                        <button onClick={() => setShowHeatmap(!showHeatmap)} className={`p-2 rounded-xl transition-all border ${showHeatmap ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-100 text-slate-400 border-slate-200'}`} title="Toggle Heatmap">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" /></svg>
+                        </button>
+                    </header>
+
+
+
+
+
                     {/* Domain Selector */}
                     <div>
-                        <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 px-1">Analysis Domain</div>
-                        <div className="flex bg-slate-100 p-1 rounded-xl gap-1">
-                            {DOMAINS_LIST.map(d => (
+                        <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Analysis Domain</div>
+                        <div className="flex bg-slate-100 p-1 rounded-2xl gap-1">
+                            {([{ id: 'gym', emoji: '🏋️', label: 'Gym' }, { id: 'restaurant', emoji: '🍽️', label: 'Restaurants' }, { id: 'bank', emoji: '🏦', label: 'Banks' }, { id: 'retail', emoji: '🛍️', label: 'Retail' }] as const).map(d => (
                                 <button
                                     key={d.id}
                                     onClick={() => setActiveDomain(d.id)}
-                                    className={`flex-1 flex items-center justify-center gap-1 py-1.5 text-[9px] font-black rounded-lg transition-all ${
-                                        activeDomain === d.id ? 'bg-white shadow-sm' : 'text-slate-400 hover:text-slate-600'
-                                    }`}
-                                    style={activeDomain === d.id ? { color: d.color } : {}}
+                                    className={`flex-1 flex items-center justify-center gap-1 py-2 text-[9px] font-black rounded-xl transition-all ${activeDomain === d.id ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'
+                                        }`}
                                 >
                                     <span>{d.emoji}</span>
-                                    <span className="truncate">{d.label.split(' / ')[0]}</span>
+                                    <span>{d.label}</span>
                                 </button>
                             ))}
                         </div>
                     </div>
 
-
-
-                    {/* Search Results Display */}
-                    {searchResults.length > 0 && (
-                        <div className="animate-in slide-in-from-top-2 duration-300 mb-4">
-                            <div className="flex justify-between items-center mb-2 px-1 border-b border-slate-100 pb-2">
-                                <span className="text-[10px] font-black text-slate-700 uppercase tracking-widest">{queryDescription}</span>
-                                <button
-                                    onClick={() => { setSearchResults([]); setSearchQuery(''); }}
-                                    className="text-[9px] text-slate-400 hover:text-red-500 font-bold transition-colors"
-                                >
-                                    CLEAR
-                                </button>
-                            </div>
-                            <div className="space-y-2 max-h-[220px] overflow-y-auto custom-scrollbar pr-1">
-                                {searchResults.map((item, idx) => {
-                                    // If this looks like a Google Place result, render place card
-                                    if (item && (item.displayName || item.formattedAddress || item.location)) {
-                                        const name = item.displayName?.text || item.displayName || item.display_name || item.id || `Place ${idx}`;
-                                        const rating = item.rating;
-                                        const address = item.formattedAddress || item.formatted_address || '';
-
-                                        return (
-                                            <div
-                                                key={item.id || idx}
-                                                className="group flex justify-between items-center p-3 bg-white border border-slate-100 rounded-xl hover:border-indigo-500 hover:shadow-lg transition-all cursor-pointer relative overflow-hidden"
-                                            >
-                                                <div className="pl-2" onClick={() => {
-                                                    if (item.location && item.location.lat && item.location.lng) {
-                                                        setSelectedPos([item.location.lat, item.location.lng]);
-                                                        setMapZoom(16);
-                                                    }
-                                                }}>
-                                                    <div className="font-bold text-slate-800 text-xs group-hover:text-indigo-700 transition-colors">{name}</div>
-                                                    {address && <div className="text-[9px] text-slate-400 font-medium mt-0.5">{address}</div>}
-                                                </div>
-                                                <div className="flex flex-col items-end gap-2">
-                                                    {rating ? (
-                                                        <div className="text-[10px] font-black text-slate-700">{rating.toFixed(1)} ★</div>
-                                                    ) : (
-                                                        <div className="text-[9px] text-slate-400">No rating</div>
-                                                    )}
-                                                    <div className="flex gap-2">
-                                                        <button onClick={() => {
-                                                            if (item.location && item.location.lat && item.location.lng) {
-                                                                setSelectedPos([item.location.lat, item.location.lng]);
-                                                                setMapZoom(16);
-                                                            }
-                                                        }} className="px-3 py-1 text-[10px] font-black bg-indigo-50 text-indigo-700 rounded-lg border border-indigo-100">Center</button>
-                                                        <button onClick={() => {
-                                                            // Trigger full analysis by setting selectedPos and keeping cluster null
-                                                            if (item.location && item.location.lat && item.location.lng) {
-                                                                setSelectedPos([item.location.lat, item.location.lng]);
-                                                                setSelectedCluster(null);
-                                                                setSelectedWard(null);
-                                                                setMapZoom(16);
-                                                            }
-                                                        }} className="px-3 py-1 text-[10px] font-black bg-emerald-50 text-emerald-700 rounded-lg border border-emerald-100">Analyze</button>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        );
-                                    }
-
-                                    // Fallback: treat as ward/cluster-like result
-                                    const ward = item as any;
-                                    const scoreVal = ward.finalScore || ward.opportunityScore || 0;
-                                    const scorePercentage = (scoreVal * 100).toFixed(1);
-                                    let scoreColorClass = 'bg-slate-100 text-slate-600 border-slate-200';
-                                    if (scoreVal > 0.8) scoreColorClass = 'bg-emerald-50 text-emerald-700 border-emerald-200';
-                                    else if (scoreVal > 0.6) scoreColorClass = 'bg-indigo-50 text-indigo-700 border-indigo-200';
-                                    else if (scoreVal > 0.4) scoreColorClass = 'bg-amber-50 text-amber-700 border-amber-200';
-                                    else scoreColorClass = 'bg-red-50 text-red-700 border-red-200';
-
-                                    return (
-                                        <div
-                                            key={ward.id || idx}
-                                            onClick={() => handleClusterClick(ward.id, ward.lat, ward.lng)}
-                                            className="group flex justify-between items-center p-3 bg-white border border-slate-100 rounded-xl hover:border-indigo-500 hover:shadow-lg transition-all cursor-pointer relative overflow-hidden"
-                                        >
-                                            <div className="absolute left-0 top-0 bottom-0 w-1 bg-transparent group-hover:bg-indigo-500 transition-colors"></div>
-                                            <div className="pl-2">
-                                                <div className="font-bold text-slate-800 text-xs group-hover:text-indigo-700 transition-colors">{ward.wardName}</div>
-                                                <div className="text-[9px] text-slate-400 font-medium mt-0.5 flex items-center gap-1">
-                                                    <span>ID: {ward.wardId}</span>
-                                                    {ward.growthRate > 0 && (
-                                                        <span className="text-emerald-600 font-bold bg-emerald-50 px-1 rounded">
-                                                            Growth: +{(ward.growthRate * 100).toFixed(0)}%
-                                                        </span>
-                                                    )}
-                                                </div>
-                                            </div>
-                                            <div className={`px-2 py-1.5 rounded-lg border text-[10px] font-black ${scoreColorClass} shadow-sm`}>
-                                                {scorePercentage}%
-                                            </div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        </div>
-                    )}
-
                     {/* Radius Selector */}
                     <div>
-                        <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 px-1">Catchment Radius</div>
-                        <div className="flex bg-slate-100 p-1 rounded-xl gap-1">
+                        <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Catchment Radius</div>
+                        <div className="flex bg-slate-100 p-1 rounded-2xl gap-1">
                             <button
                                 onClick={() => setSearchRadius(500)}
-                                className={`flex-1 py-1.5 text-[9px] font-black rounded-lg transition-all ${searchRadius === 500 ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                                className={`flex-1 py-2 text-[10px] font-black rounded-xl transition-all ${searchRadius === 500 ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
                             >
-                                500m
+                                500m (Hyper-Local)
                             </button>
                             <button
                                 onClick={() => setSearchRadius(1000)}
-                                className={`flex-1 py-1.5 text-[9px] font-black rounded-lg transition-all ${searchRadius === 1000 ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                                className={`flex-1 py-2 text-[10px] font-black rounded-xl transition-all ${searchRadius === 1000 ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
                             >
-                                1.0km
+                                1.0km (Standard)
                             </button>
                         </div>
                     </div>
 
                     {/* Suitability Index Card */}
-                    <div className="bg-[#0f172a] text-white p-4 lg:p-5 rounded-2xl shadow-xl relative overflow-hidden border border-slate-800">
+                    <div className="bg-[#0f172a] text-white p-5 lg:p-8 rounded-[1.5rem] lg:rounded-[2.5rem] shadow-2xl relative overflow-hidden border border-slate-800 shrink-0">
                         <div className="relative z-10">
-                            <div className="flex justify-between items-start mb-0.5">
-                                <h2 className="text-[9px] lg:text-[10px] font-black text-indigo-400 uppercase tracking-widest">Site Viability</h2>
-                                <span className={`text-[9px] lg:text-[10px] font-black uppercase tracking-widest ${getVerdict().color}`}>{getVerdict().text}</span>
+                            <div className="flex justify-between items-start mb-1">
+                                <h2 className="text-[9px] lg:text-[11px] font-black text-indigo-400 uppercase tracking-widest">Site Viability</h2>
+                                <span className={`text-[9px] lg:text-[11px] font-black uppercase tracking-widest ${getVerdict().color}`}>{getVerdict().text}</span>
                             </div>
-                            <div className="flex items-baseline gap-2">
-                                <span className="text-4xl lg:text-5xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-br from-white to-slate-500">
+                            <div className="flex items-baseline gap-2 lg:gap-3">
+                                <span className="text-5xl lg:text-7xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-br from-white to-slate-500">
                                     {scores ? scores.total : '--'}
                                 </span>
-                                <span className="text-slate-500 font-bold text-xs lg:text-sm">/100</span>
+                                <span className="text-slate-500 font-bold text-base lg:text-xl">/100</span>
                             </div>
 
+                            {!scores && (
+                                <div className="mt-4 text-center text-slate-400 text-sm font-medium italic">
+                                    👆 Click any ward on the map to analyze
+                                </div>
+                            )}
+
                             {scores && (
-                                <div className="mt-2.5 lg:mt-3 flex gap-2">
-                                    <div className="flex-1 bg-white/5 border border-white/10 p-1.5 lg:p-2 rounded-xl">
-                                        <div className="text-[7px] lg:text-[9px] text-slate-400 font-bold uppercase mb-0.5">Generators</div>
-                                        <div className="text-xs lg:text-base font-black text-white">{demandGenerators}</div>
+                                <div className="mt-4 lg:mt-6 flex gap-2">
+                                    <div className="flex-1 bg-white/5 border border-white/10 p-2 lg:p-3 rounded-xl lg:rounded-2xl">
+                                        <div className="text-[8px] lg:text-[10px] text-slate-400 font-bold uppercase mb-1">Market Generators</div>
+                                        <div className="text-sm lg:text-lg font-black text-white">{demandGenerators}</div>
                                     </div>
-                                    <div className="flex-1 bg-white/5 border border-white/10 p-1.5 lg:p-2 rounded-xl">
-                                        <div className="text-[7px] lg:text-[9px] text-slate-400 font-bold uppercase mb-0.5">Competitors</div>
-                                        <div className="text-xs lg:text-base font-black text-white">{competitors}</div>
+                                    <div className="flex-1 bg-white/5 border border-white/10 p-2 lg:p-3 rounded-xl lg:rounded-2xl">
+                                        <div className="text-[8px] lg:text-[10px] text-slate-400 font-bold uppercase mb-1">Competitors</div>
+                                        <div className="text-sm lg:text-lg font-black text-white">{competitors}</div>
                                     </div>
                                 </div>
                             )}
                         </div>
+                        <div className="absolute right-[-10%] top-[-10%] w-32 lg:w-48 h-32 lg:h-48 bg-indigo-600/10 rounded-full blur-3xl"></div>
                     </div>
 
                     {/* Metrics Chart */}
-                    <div className="bg-slate-50/50 p-2.5 lg:p-3.5 rounded-xl border border-slate-100 shadow-inner h-34 lg:h-40">
+                    <div className="bg-slate-50/50 p-3 lg:p-4 rounded-2xl lg:rounded-3xl border border-slate-100 shadow-inner h-40 lg:h-48 shrink-0">
                         <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={chartData} layout="vertical" margin={{ left: -12, right: 12 }}>
+                            <BarChart data={chartData} layout="vertical" margin={{ left: -5, right: 15 }}>
                                 <XAxis type="number" hide domain={[0, 100]} />
-                                <YAxis dataKey="name" type="category" width={70} style={{ fontSize: '8.5px', fontWeight: '900', fill: '#64748b' }} />
+                                <YAxis dataKey="name" type="category" width={60} style={{ fontSize: '9px', fontWeight: '900', fill: '#64748b' }} />
                                 <Tooltip cursor={{ fill: 'transparent' }} />
-                                <Bar dataKey="score" radius={[0, 4, 4, 0]} barSize={13}>
+                                <Bar dataKey="score" radius={[0, 6, 6, 0]} barSize={16}>
                                     {chartData.map((entry, index) => <Cell key={`c-${index}`} fill={entry.color} />)}
+                                    <LabelList
+                                        dataKey="score"
+                                        position="right"
+                                        style={{ fontSize: '9px', fontWeight: '900', fill: '#64748b' }}
+                                        formatter={(v: number) => `${v}`}
+                                    />
                                 </Bar>
                             </BarChart>
                         </ResponsiveContainer>
                     </div>
 
                     {/* AI Strategy Insights */}
-                    <div className="flex flex-col">
+                    <div className="flex flex-col shrink-0 mb-4">
                         <div className="flex items-center justify-between mb-3 lg:mb-4 px-1">
                             <h3 className="text-[10px] lg:text-xs font-black text-slate-400 uppercase tracking-widest">Geo-Grounded Strategy</h3>
                             {isAnalyzing && (
@@ -1628,24 +1531,34 @@ const App: React.FC = () => {
                         </div>
                     )}
                 </div>
+            </div>
 
-                <div className="mt-auto pt-6 flex items-center justify-between">
-                    <div className="text-[8px] lg:text-[9px] text-slate-300 font-black uppercase tracking-widest">
-                        Grounded: Gemini 2.5 + Live Scrape
-                    </div>
+            {/* RIGHT SIDEBAR / CHAT UI */}
+            {/* The ChatInterface component will be refactored to take full height of its container next */}
+            <div className={`absolute right-4 top-24 bottom-4 w-[360px] max-w-[90vw] z-20 transition-transform duration-500 ease-in-out pointer-events-none ${chatOpen ? 'translate-x-0' : 'translate-x-[120%]'}`}>
+                <div className="w-full h-full pointer-events-auto flex flex-col">
+                    <ChatInterface
+                        messages={conversationMessages}
+                        onSendMessage={handleUserMessage}
+                        onClearChat={handleClearChat}
+                        isAITyping={isAITyping}
+                        isOpen={true} // Force true inside its own container, toggle via the container itself
+                        onToggle={() => setChatOpen(!chatOpen)}
+                        selectedWard={selectedWard || undefined}
+                    />
                 </div>
             </div>
 
-            {/* Chat Interface */}
-            <ChatInterface
-                messages={conversationMessages}
-                onSendMessage={handleUserMessage}
-                onClearChat={handleClearChat}
-                isAITyping={isAITyping}
-                isOpen={chatOpen}
-                onToggle={() => setChatOpen(!chatOpen)}
-                selectedWard={selectedWard || undefined}
-            />
+            {/* Floating Chat Toggle Button (when left sidebar is closed) */}
+            {!chatOpen && (
+                <button
+                    onClick={() => setChatOpen(true)}
+                    className="absolute right-4 bottom-4 z-20 bg-indigo-600 text-white p-4 rounded-full shadow-2xl hover:bg-indigo-700 hover:scale-110 transition-all border border-indigo-400 flex items-center justify-center group"
+                >
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
+                    <span className="absolute right-14 opacity-0 group-hover:opacity-100 bg-black/80 text-white text-[10px] font-bold px-2 py-1 rounded whitespace-nowrap transition-opacity">Open AI Chat</span>
+                </button>
+            )}
         </div>
     );
 };

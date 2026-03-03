@@ -1,3 +1,109 @@
+import type { DomainId } from './domains';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Smart Search Intent Parser
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Keyword → domain mapping. Order matters: more-specific terms first. */
+const DOMAIN_KEYWORDS: { keywords: string[]; domain: DomainId }[] = [
+    {
+        keywords: [
+            'gym', 'fitness', 'exercise', 'workout', 'crossfit',
+            'pilates', 'yoga studio', 'sports club', 'health club',
+        ],
+        domain: 'gym',
+    },
+    {
+        keywords: [
+            'restaurant', 'restaurants', 'cafe', 'cafes', 'coffee',
+            'food', 'dining', 'eat', 'eatery', 'bistro', 'diner',
+            'bakery', 'pizza', 'burger', 'biryani', 'sushi',
+        ],
+        domain: 'restaurant',
+    },
+    {
+        keywords: [
+            'bank', 'banks', 'atm', 'finance', 'financial',
+            'credit union', 'branch', 'loan', 'savings',
+        ],
+        domain: 'bank',
+    },
+    {
+        keywords: [
+            'retail', 'shop', 'shopping', 'store', 'stores',
+            'supermarket', 'grocery', 'market', 'mall', 'outlet',
+        ],
+        domain: 'retail',
+    },
+];
+
+/** Filler words that should be removed when extracting the location string. */
+const LOCATION_FILLER = [
+    'in', 'near', 'around', 'at', 'for', 'best', 'top',
+    'good', 'spots', 'spot', 'place', 'places', 'location',
+    'options', 'option', 'area', 'nearby', 'closest', 'find',
+    'show', 'get', 'search', 'where', 'are', 'is', 'the', 'a',
+    'an', 'some',
+];
+
+export interface SearchIntent {
+    /** Detected business domain, or null if none found */
+    domain: DomainId | null;
+    /** Cleaned location string for geocoding (e.g. "Koramangala") */
+    locationQuery: string;
+    /** True if a domain was detected */
+    hasDomain: boolean;
+}
+
+/**
+ * Parse a natural language query to extract the target domain and location.
+ *
+ * Examples:
+ *   "cafes in Koramangala"      → { domain: 'restaurant', locationQuery: 'Koramangala' }
+ *   "banks near HSR layout"     → { domain: 'bank',       locationQuery: 'HSR layout' }
+ *   "top 5 spots"               → { domain: null,         locationQuery: 'top 5 spots' }
+ *   "Indiranagar"               → { domain: null,         locationQuery: 'Indiranagar' }
+ */
+export function parseSearchIntent(query: string): SearchIntent {
+    const lower = query.toLowerCase().trim();
+    let detectedDomain: DomainId | null = null;
+    let remaining = lower;
+
+    // 1. Detect domain — try multi-word phrases first, then single words
+    outer: for (const entry of DOMAIN_KEYWORDS) {
+        for (const kw of entry.keywords) {
+            if (lower.includes(kw)) {
+                detectedDomain = entry.domain;
+                // Remove the matched keyword from the remaining string
+                remaining = remaining.replace(new RegExp(`\\b${kw}\\b`, 'g'), ' ');
+                break outer;
+            }
+        }
+    }
+
+    // 2. Strip filler words
+    const words = remaining.split(/\s+/).filter(w => w && !LOCATION_FILLER.includes(w));
+
+    // 3. Restore original casing for the location portion
+    //    by finding the corresponding tokens in the original query
+    const originalTokens = query.trim().split(/\s+/);
+    const locationWords: string[] = [];
+
+    for (const word of words) {
+        // Match back to the original-cased word
+        const match = originalTokens.find(t => t.toLowerCase() === word);
+        if (match) locationWords.push(match);
+    }
+
+    const locationQuery = locationWords.join(' ').trim();
+
+    return {
+        domain: detectedDomain,
+        locationQuery: locationQuery || query.trim(), // fallback to full query
+        hasDomain: detectedDomain !== null,
+    };
+}
+
 export interface WardCluster {
     id: string;
     wardId: string;
