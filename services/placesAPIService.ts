@@ -586,46 +586,26 @@ export async function getDomainIntelligence(
     competitorTypes: string[],
     infraTypes: string[]
 ): Promise<DomainLocationIntelligence> {
-    const [competitors, establishments, infra, transit, lodging] = await Promise.all([
+    const [competitors, corporateRaw, infra, transit, apartmentRaw] = await Promise.all([
         nearbySearch(lat, lng, radiusMeters, competitorTypes),
-        nearbySearch(lat, lng, radiusMeters, ['establishment']),
+        // 'establishment' is deprecated — use specific supported types instead
+        nearbySearch(lat, lng, radiusMeters, ['corporate_office', 'coworking_space'], true, BASIC_FIELD_MASK),
         infraTypes.length > 0
-            ? nearbySearch(lat, lng, radiusMeters, infraTypes)
+            ? nearbySearch(lat, lng, radiusMeters, infraTypes, false, BASIC_FIELD_MASK)
             : Promise.resolve([] as PlaceResult[]),
-        nearbySearch(lat, lng, radiusMeters, ['bus_station', 'light_rail_station', 'subway_station']),
-        nearbySearch(lat, lng, radiusMeters, ['lodging']),
+        nearbySearch(lat, lng, radiusMeters, ['bus_station', 'bus_stop', 'light_rail_station', 'subway_station'], false, BASIC_FIELD_MASK),
+        // 'lodging' is deprecated — use apartment_complex directly
+        nearbySearch(lat, lng, radiusMeters, ['apartment_complex'], false, BASIC_FIELD_MASK),
     ]);
 
-    // Corporate filter
-    const corporates = establishments.filter(p => {
-        const name = p.displayName.toLowerCase();
-        const types = p.types.map(t => t.toLowerCase());
-        const isNonOffice = (
-            types.includes('restaurant') || types.includes('cafe') || types.includes('food') ||
-            types.includes('store') || types.includes('shopping') || types.includes('lodging') ||
-            types.includes('hospital') || types.includes('school') ||
-            name.includes('restaurant') || name.includes('hotel') || name.includes('cafe')
-        );
-        const isOffice = (
-            types.includes('office') || types.includes('business') || types.includes('professional_services') ||
-            name.includes('tech') || name.includes('software') || name.includes('corporate') ||
-            name.includes('pvt') || name.includes('ltd') || name.includes('inc') ||
-            name.includes('solutions') || name.includes('systems') || name.includes('services') || name.includes('consulting')
-        );
-        return isOffice || (!isNonOffice && establishments.length > 50);
-    });
+    // Corporates — already filtered to corporate_office / coworking_space types;
+    // apply name blocklist to remove any misclassified places
+    const corporates = corporateRaw.filter(p =>
+        !CORPORATE_BLOCKLIST.some(word => p.displayName.toLowerCase().includes(word))
+    );
 
-    // Apartment filter
-    const apartments = lodging.filter(p => {
-        const name = p.displayName.toLowerCase();
-        return (
-            name.includes('apartment') || name.includes('residency') || name.includes('residence') ||
-            name.includes('homes') || name.includes('enclave') || name.includes('tower') ||
-            name.includes('villa') || name.includes('flats') || name.includes('heights') ||
-            name.includes('gardens') || name.includes('park') ||
-            (!name.includes('hotel') && !name.includes('guest') && lodging.length < 20)
-        );
-    });
+    // Apartments — apartment_complex is already a precise type, no further filtering needed
+    const apartments = apartmentRaw;
 
     const highRated = competitors.filter(p => p.rating && p.rating >= 4.0);
     const ratings = competitors.filter(p => p.rating).map(p => p.rating!);
@@ -653,11 +633,13 @@ export async function getDomainIntelligence(
     else if (saturationRatio < 0.6) marketGap = 'COMPETITIVE';
     else marketGap = 'SATURATED';
 
-    const trueComp = await getAggregateCount(lat, lng, radiusMeters, competitorTypes, competitors.length);
-    const trueCorp = await getAggregateCount(lat, lng, radiusMeters, ['establishment'], corporates.length);
-    const trueApt = await getAggregateCount(lat, lng, radiusMeters, ['lodging'], apartments.length);
-    const trueInfra = await getAggregateCount(lat, lng, radiusMeters, infraTypes, infra.length);
-    const trueTransit = await getAggregateCount(lat, lng, radiusMeters, ['transit_station'], transit.length);
+    // Use actual fetched count for competitors (not extrapolated) so strategy text,
+    // gap score, and map markers all display the same number.
+    const trueComp = competitors.length;
+    const trueCorp = await getAggregateCount(lat, lng, radiusMeters, ['corporate_office', 'coworking_space'], corporates.length);
+    const trueApt = await getAggregateCount(lat, lng, radiusMeters, ['apartment_complex'], apartments.length);
+    const trueInfra = infraTypes.length > 0 ? await getAggregateCount(lat, lng, radiusMeters, infraTypes, infra.length) : 0;
+    const trueTransit = await getAggregateCount(lat, lng, radiusMeters, ['bus_station', 'bus_stop', 'light_rail_station', 'subway_station'], transit.length);
 
     return {
         competitors: {

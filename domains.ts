@@ -78,7 +78,7 @@ export const DOMAIN_CONFIG: Record<DomainId, DomainConfig> = {
     competitorLabel: 'Banks / ATMs',
     generatorLabel: 'Offices + Residents',
     competitorTypes: ['bank', 'atm'],
-    infraTypes: ['store', 'shopping_mall', 'supermarket'],
+    infraTypes: ['shopping_mall', 'supermarket', 'department_store'],
     scoring: {
       demand: { label: 'Pop', desc: 'Offices + Residents', color: '#3b82f6', weight: 0.40, saturationLimit: 25 },
       connectivity: { label: 'Access', desc: 'Transit + Footfall', color: '#34d399', weight: 0.25, saturationLimit: 10 },
@@ -94,7 +94,7 @@ export const DOMAIN_CONFIG: Record<DomainId, DomainConfig> = {
     color: '#8b5cf6',
     competitorLabel: 'Retailers',
     generatorLabel: 'Residents + Transit',
-    competitorTypes: ['store', 'supermarket', 'clothing_store'],
+    competitorTypes: ['supermarket', 'department_store', 'convenience_store'],
     infraTypes: ['cafe', 'restaurant', 'shopping_mall', 'movie_theater'],
     scoring: {
       demand: { label: 'Catchment', desc: 'Residents + Corporates', color: '#8b5cf6', weight: 0.35, saturationLimit: 30 },
