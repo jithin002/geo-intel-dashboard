@@ -538,13 +538,13 @@ const App: React.FC = () => {
                     if (parts.length > 7) {
                         const wardId = parts[6];
                         const wardName = parts[7].replace(/^"|"$/g, ''); // Remove quotes
-                        const opportunityScore = parseFloat(parts[1]);
-                        const finalScore = parseFloat(parts[14]);
-                        const lat = parseFloat(parts[2]);
-                        const lng = parseFloat(parts[3]);
-                        const gymCount = parseInt(parts[9]);
-                        const cafeCount = parseInt(parts[10]);
-                        const growthRate = parseFloat(parts[5]);
+                        const opportunityScore = parseFloat(parts[1]) || 0;
+                        const finalScore = parseFloat(parts[14]) || 0;
+                        const lat = parseFloat(parts[2]) || 0;
+                        const lng = parseFloat(parts[3]) || 0;
+                        const gymCount = parseInt(parts[9]) || 0;
+                        const cafeCount = parseInt(parts[10]) || 0;
+                        const growthRate = parseFloat(parts[5]) || 0;
 
                         // Determine color based on final score
                         let color = '#ef4444'; // Red - low
@@ -720,13 +720,15 @@ const App: React.FC = () => {
     const chartData = useMemo(() => {
         if (!scores) return [];
         const d = DOMAIN_CONFIG[activeDomain].scoring;
+        const pct = (w: number) => `(${Math.round(w * 100)}%)`;
         return [
-            { name: d.demand.label, score: scores.demographicLoad, color: d.demand.color, desc: d.demand.desc },
-            { name: d.connectivity.label, score: scores.connectivity, color: d.connectivity.color, desc: d.connectivity.desc },
-            { name: d.gap.label, score: scores.competitorRatio, color: d.gap.color, desc: d.gap.desc },
-            { name: d.infra.label, score: scores.infrastructure, color: d.infra.color, desc: d.infra.desc },
+            { name: `${d.demand.label} ${pct(d.demand.weight)}`, score: scores.demographicLoad, color: d.demand.color, desc: d.demand.desc },
+            { name: `${d.connectivity.label} ${pct(d.connectivity.weight)}`, score: scores.connectivity, color: d.connectivity.color, desc: d.connectivity.desc },
+            { name: `${d.gap.label} ${pct(d.gap.weight)}`, score: scores.competitorRatio, color: d.gap.color, desc: d.gap.desc },
+            { name: `${d.infra.label} ${pct(d.infra.weight)}`, score: scores.infrastructure, color: d.infra.color, desc: d.infra.desc },
         ];
     }, [scores, activeDomain]);
+
 
     const getVerdict = () => {
         if (!scores) return { text: "SELECT AREA", color: "text-slate-400" };
@@ -1482,11 +1484,11 @@ const App: React.FC = () => {
                     </div>
 
                     {/* Metrics Chart */}
-                    <div className="bg-slate-50/50 p-3 lg:p-4 rounded-2xl lg:rounded-3xl border border-slate-100 shadow-inner h-40 lg:h-48 shrink-0">
+                    <div className="bg-slate-50/50 p-3 lg:p-4 rounded-2xl lg:rounded-3xl border border-slate-100 shadow-inner h-40 lg:h-48 shrink-0" style={{ minWidth: '300px' }}>
                         <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={chartData} layout="vertical" margin={{ left: -5, right: 15 }}>
+                            <BarChart data={chartData} layout="vertical" margin={{ left: 0, right: 20 }}>
                                 <XAxis type="number" hide domain={[0, 100]} />
-                                <YAxis dataKey="name" type="category" width={60} style={{ fontSize: '9px', fontWeight: '900', fill: '#64748b' }} />
+                                <YAxis dataKey="name" type="category" width={90} style={{ fontSize: '8px', fontWeight: '900', fill: '#64748b' }} />
                                 <Tooltip cursor={{ fill: 'transparent' }} />
                                 <Bar dataKey="score" radius={[0, 6, 6, 0]} barSize={16}>
                                     {chartData.map((entry, index) => <Cell key={`c-${index}`} fill={entry.color} />)}
@@ -1500,6 +1502,7 @@ const App: React.FC = () => {
                             </BarChart>
                         </ResponsiveContainer>
                     </div>
+
 
                     {/* AI Strategy Insights */}
                     <div className="flex flex-col shrink-0 mb-4">

@@ -16,10 +16,15 @@ export interface CalculatedScores {
  * The scaling is logarithmic so the first few POIs matter more than the later ones.
  */
 function logNorm(count: number, limit: number): number {
-    return (Math.log1p(count) / Math.log1p(limit)) * 100;
+    // Guard: if limit is 0 or count/limit is non-finite, return 0 instead of NaN
+    if (!limit || limit <= 0) return 0;
+    const result = (Math.log1p(count) / Math.log1p(limit)) * 100;
+    return isFinite(result) ? result : 0;
 }
 
 function clampScore(val: number): number {
+    // Guard: NaN / Infinity should resolve to 0, not propagate
+    if (!isFinite(val) || isNaN(val)) return 0;
     return Math.max(0, Math.min(100, Math.round(val)));
 }
 
@@ -118,10 +123,10 @@ export function calculateDomainScores(
     );
 
     return {
-        demographicLoad: demandScore,
-        connectivity: connScore,
-        competitorRatio: gapScore,
-        infrastructure: infraScore,
-        total: totalScore
+        demographicLoad: demandScore || 0,
+        connectivity: connScore || 0,
+        competitorRatio: gapScore || 0,
+        infrastructure: infraScore || 0,
+        total: totalScore || 0,
     };
 }
