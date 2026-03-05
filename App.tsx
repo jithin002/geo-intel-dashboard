@@ -41,6 +41,11 @@ const synergyIcon = new L.Icon({
     iconUrl: 'https://cdn-icons-png.flaticon.com/512/3054/3054889.png', // Coffee
     iconSize: [20, 20],
 });
+const retailIcon = new L.Icon({
+    iconUrl: 'https://cdn-icons-png.flaticon.com/512/3081/3081559.png', // Shopping store
+    iconSize: [24, 24],
+    className: 'drop-shadow-md'
+});
 const corporateIcon = new L.Icon({
     iconUrl: 'https://cdn-icons-png.flaticon.com/512/3061/3061341.png', // Office Building
     iconSize: [24, 24],
@@ -67,7 +72,7 @@ const DOMAIN_ICON_MAP = {
     gym: { icon: gymIcon, emoji: '🏋️', infraEmoji: '☕', infraLabel: 'LIFESTYLE' },
     restaurant: { icon: restaurantIcon, emoji: '🍽️', infraEmoji: '🛍️', infraLabel: 'FOOTFALL' },
     bank: { icon: bankIcon, emoji: '🏦', infraEmoji: '🏬', infraLabel: 'COMMERCIAL' },
-    retail: { icon: synergyIcon, emoji: '🛍️', infraEmoji: '🍿', infraLabel: 'SYNERGY' }
+    retail: { icon: retailIcon, emoji: '🛍️', infraEmoji: '🍿', infraLabel: 'SYNERGY' }
 };
 
 const getIconForType = (type: LocationType) => {
@@ -1136,7 +1141,7 @@ const App: React.FC = () => {
                 </MapContainer>
 
                 {/* Legend */}
-                <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[40] pointer-events-none hidden md:block">
+                <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-[40] pointer-events-none hidden md:block">
                     <div className="bg-white/90 backdrop-blur-md px-4 py-2.5 rounded-[1.25rem] shadow-xl border border-white/80 pointer-events-auto flex items-center gap-4">
                         <span className="text-[9px] font-black text-slate-800 uppercase tracking-widest border-r border-slate-200 pr-4">Legend</span>
                         <div className="flex items-center gap-4">
@@ -1157,7 +1162,7 @@ const App: React.FC = () => {
                                 <span className="text-[9px] text-slate-600 font-bold">Metro</span>
                             </div>
                             <div className="flex items-center gap-1.5" title="Bus Stops">
-                                <img src="https://cdn-icons-png.flaticon.com/512/3448/3448339.png" className="w-4 h-4" alt="bus" />
+                                <img src="https://cdn-icons-png.flaticon.com/128/1178/1178850.png" className="w-4 h-4" alt="bus" />
                                 <span className="text-[9px] text-slate-600 font-bold">Bus</span>
                             </div>
                             <div className="flex items-center gap-1.5 border-l border-slate-200 pl-4 ml-1">
