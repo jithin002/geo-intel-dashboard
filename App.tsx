@@ -38,7 +38,11 @@ const bankIcon = new L.Icon({
     className: 'drop-shadow-md'
 });
 const synergyIcon = new L.Icon({
-    iconUrl: 'https://cdn-icons-png.flaticon.com/512/3054/3054889.png', // Coffee
+    iconUrl: 'https://cdn-icons-png.freepik.com/256/17695/17695120.png?semt=ais_white_label', // Lifestyle synergy
+    iconSize: [22, 22],
+});
+const cafeIcon = new L.Icon({
+    iconUrl: 'https://cdn-icons-png.flaticon.com/512/3054/3054889.png', // Coffee / Cafe
     iconSize: [20, 20],
 });
 const mallIcon = new L.Icon({
@@ -48,6 +52,11 @@ const mallIcon = new L.Icon({
 const commercialIcon = new L.Icon({
     iconUrl: 'https://cdn-icons-png.flaticon.com/512/7991/7991011.png', // Storefront / commercial
     iconSize: [22, 22],
+});
+const retailIcon = new L.Icon({
+    iconUrl: 'https://cdn-icons-png.flaticon.com/512/3081/3081648.png', // Retail store
+    iconSize: [24, 24],
+    className: 'drop-shadow-md'
 });
 const corporateIcon = new L.Icon({
     iconUrl: 'https://cdn-icons-png.flaticon.com/512/3061/3061341.png', // Office Building
@@ -72,10 +81,10 @@ const busIcon = new L.Icon({
 
 // Domain → competitor icon mapping
 const DOMAIN_ICON_MAP = {
-    gym: { icon: gymIcon, emoji: '🏋️', infraEmoji: '☕', infraLabel: 'LIFESTYLE', infraIcon: synergyIcon },
-    restaurant: { icon: restaurantIcon, emoji: '🍽️', infraEmoji: '🛍️', infraLabel: 'FOOTFALL', infraIcon: mallIcon },
+    gym: { icon: gymIcon, emoji: '🏋️', infraEmoji: '☕', infraLabel: 'LIFESTYLE', infraIcon: cafeIcon },
+    restaurant: { icon: restaurantIcon, emoji: '🍽️', infraEmoji: '🛍️', infraLabel: 'FOOTFALL', infraIcon: synergyIcon },
     bank: { icon: bankIcon, emoji: '🏦', infraEmoji: '🏬', infraLabel: 'COMMERCIAL', infraIcon: commercialIcon },
-    retail: { icon: synergyIcon, emoji: '🛍️', infraEmoji: '🍿', infraLabel: 'SYNERGY', infraIcon: mallIcon },
+    retail: { icon: retailIcon, emoji: '🛍️', infraEmoji: '🍿', infraLabel: 'SYNERGY', infraIcon: synergyIcon },
 };
 
 const getIconForType = (type: LocationType) => {
