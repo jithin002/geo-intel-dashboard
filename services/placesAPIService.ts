@@ -59,10 +59,29 @@ export interface PlaceResult {
 }
 
 /**
+ * Graceful Authenticity Filter
+ *
+ * Tier 1 — Strict:  rating >= 4.0 AND reviews >= 20  (use when ≥ 3 results)
+ * Tier 2 — Loose:  rating >= 3.5 OR  reviews >= 5   (fallback when Tier 1 gives < 3)
+ * Tier 3 — Raw:    no filter                         (last resort when Tier 2 gives < 3)
+ *
+ * This keeps quality data for mature domains (gyms, restaurants) while preserving
+ * coverage for sparse domains (banks, ATMs) that rarely have many reviews.
+ */
+function gracefulAuthFilter(places: PlaceResult[]): { filtered: PlaceResult[]; tier: 1 | 2 | 3 } {
+    const strict = places.filter(p => (p.rating || 0) >= 3.8 && (p.userRatingCount || 0) >= 20);
+    if (strict.length >= 3) return { filtered: strict, tier: 1 };
+
+    const loose = places.filter(p => (p.rating || 0) >= 3.5 || (p.userRatingCount || 0) >= 5);
+    if (loose.length >= 3) return { filtered: loose, tier: 2 };
+
+    return { filtered: places, tier: 3 };
+}
+
+
+/**
  * Get Aggregate Count:
- * Returns the true count of POIs. If the Places API hit the 20-result cap,
- * this function extrapolates the true count based on radius area scaling,
- * or can be swapped to hit the real Google Places Insights API exactly.
+ * Returns the true count of POIs bounded by the 20-result cap.
  */
 export async function getAggregateCount(
     lat: number,
@@ -71,15 +90,8 @@ export async function getAggregateCount(
     placeTypes: string[],
     baseFetchCount: number
 ): Promise<number> {
-    // If we fetched fewer than 20, the API returned the exact total.
-    if (baseFetchCount < 20) return baseFetchCount;
-
-    // If we hit the cap (20), we extrapolate the total using a conservative density modifier.
-    // (A 3km radius has 9x the area of a 1km radius).
-    const radiusKm = radiusMeters / 1000;
-    const densityMultiplier = Math.max(1, radiusKm * 1.5);
-
-    return Math.floor(baseFetchCount * densityMultiplier);
+    // Return true count bounded by the 20 result cap.
+    return baseFetchCount;
 }
 
 /**
@@ -271,7 +283,7 @@ export async function getLocationIntelligence(
 
     // ── 6 parallel requests ───────────────────────────────────────────────
     const [
-        gyms,
+        gymsRaw,
         corporatesRaw,
         cafes,
         transitAll,
@@ -312,6 +324,10 @@ export async function getLocationIntelligence(
             BASIC_FIELD_MASK
         ),
     ]);
+
+    // ── Post-process gyms: apply graceful authenticity filter ─────────────
+    const { filtered: gyms, tier: gymTier } = gracefulAuthFilter(gymsRaw);
+    console.log(`  🏋️ Gyms: ${gymsRaw.length} raw → ${gyms.length} (tier ${gymTier})`);
 
     // ── Post-process corporate: apply blocklist ───────────────────────────
     const corporates = corporatesRaw.filter(p =>
@@ -586,7 +602,7 @@ export async function getDomainIntelligence(
     competitorTypes: string[],
     infraTypes: string[]
 ): Promise<DomainLocationIntelligence> {
-    const [competitors, corporateRaw, infra, transit, apartmentRaw] = await Promise.all([
+    const [competitorsRaw, corporateRaw, infra, transit, apartmentRaw] = await Promise.all([
         nearbySearch(lat, lng, radiusMeters, competitorTypes),
         // 'establishment' is deprecated — use specific supported types instead
         nearbySearch(lat, lng, radiusMeters, ['corporate_office', 'coworking_space'], true, BASIC_FIELD_MASK),
@@ -603,6 +619,10 @@ export async function getDomainIntelligence(
     const corporates = corporateRaw.filter(p =>
         !CORPORATE_BLOCKLIST.some(word => p.displayName.toLowerCase().includes(word))
     );
+
+    // Apply graceful authenticity filter to competitors
+    const { filtered: competitors, tier: compTier } = gracefulAuthFilter(competitorsRaw);
+    console.log(`  🎯 Competitors: ${competitorsRaw.length} raw → ${competitors.length} (tier ${compTier})`);
 
     // Apartments — apartment_complex is already a precise type, no further filtering needed
     const apartments = apartmentRaw;

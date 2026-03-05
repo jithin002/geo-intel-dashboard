@@ -49,11 +49,7 @@ export function calculateDomainScores(
     const officesCt = (intel as any).corporateOffices?.total || 0;
     const transitCt = (intel as any).transitStations?.total || 0;
 
-    // For restaurants: only 4★+ rated places are effective competitors.
-    // A poorly-rated takeaway doesn't meaningfully compete with a quality restaurant.
-    const effectiveCompetitorsCt = (domainId === 'restaurant')
-        ? ((intel as any).competitors?.places?.filter((p: any) => p.rating && p.rating >= 4.0).length ?? competitorsCt)
-        : competitorsCt;
+    const effectiveCompetitorsCt = competitorsCt;
 
     let infraCt = 0;
     if (domainId === 'gym') {

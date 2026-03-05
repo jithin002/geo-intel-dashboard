@@ -29,6 +29,7 @@ export interface ChatContext {
     recentMessages?: Array<{ role: string; content: string }>;
     currentLocation?: [number, number];
     selectedWard?: string;
+    radius?: number;
     scores?: ScoringMatrix;
     realPOIs?: any;
     wardClusters?: any[];
@@ -314,7 +315,8 @@ async function fetchPlacesData(
     // Use context location if not provided
     const lat = params.lat || context.currentLocation?.[0];
     const lng = params.lng || context.currentLocation?.[1];
-    const radius = params.radius || 1000;
+    // Enforce context radius over params.radius to prevent Gemini from inflating search boundaries
+    const radius = context.radius || params.radius || 1000;
 
     if (!lat || !lng) {
         throw new Error('Location coordinates required for Places API');

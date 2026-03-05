@@ -44,8 +44,8 @@ export const DOMAIN_CONFIG: Record<DomainId, DomainConfig> = {
     competitorTypes: ['gym'],
     infraTypes: ['cafe', 'restaurant'],
     scoring: {
-      // 25 apts/corps in a 1km radius is considered saturated for demand
-      demand: { label: 'Demand', desc: 'Corp + Residents', color: '#6366f1', weight: 0.30, saturationLimit: 25 },
+      // 20 apts/corps in a 1km radius is considered saturated for demand (API cap)
+      demand: { label: 'Demand', desc: 'Corp + Residents', color: '#6366f1', weight: 0.30, saturationLimit: 20 },
       connectivity: { label: 'Access', desc: 'Metro / Bus', color: '#34d399', weight: 0.15, saturationLimit: 10 },
       gap: { label: 'Gap', desc: 'Market Space', color: '#f59e0b', weight: 0.30, saturationLimit: 6 },
       infra: { label: 'Vibe', desc: 'Cafes / Lifestyle', color: '#ec4899', weight: 0.25, saturationLimit: 20 },
@@ -63,7 +63,7 @@ export const DOMAIN_CONFIG: Record<DomainId, DomainConfig> = {
     // Added 'university' to natively extract student data from the same request
     infraTypes: ['shopping_mall', 'movie_theater', 'tourist_attraction', 'night_club', 'university'],
     scoring: {
-      demand: { label: 'Footfall', desc: 'Offices + Residents + Students', color: '#f59e0b', weight: 0.35, saturationLimit: 30 },
+      demand: { label: 'Footfall', desc: 'Offices + Residents + Students', color: '#f59e0b', weight: 0.35, saturationLimit: 20 },
       connectivity: { label: 'Access', desc: 'Metro / Bus proximity', color: '#34d399', weight: 0.20, saturationLimit: 10 },
       gap: { label: 'Dining Gap', desc: 'Supply vs Demand', color: '#ef4444', weight: 0.30, saturationLimit: 5 },
       infra: { label: 'Dest. Pull', desc: 'Malls + Entertainment + Tourism', color: '#8b5cf6', weight: 0.15, saturationLimit: 15 },
@@ -80,7 +80,7 @@ export const DOMAIN_CONFIG: Record<DomainId, DomainConfig> = {
     competitorTypes: ['bank', 'atm'],
     infraTypes: ['shopping_mall', 'supermarket', 'department_store'],
     scoring: {
-      demand: { label: 'Pop', desc: 'Offices + Residents', color: '#3b82f6', weight: 0.40, saturationLimit: 25 },
+      demand: { label: 'Pop', desc: 'Offices + Residents', color: '#3b82f6', weight: 0.40, saturationLimit: 20 },
       connectivity: { label: 'Access', desc: 'Transit + Footfall', color: '#34d399', weight: 0.25, saturationLimit: 10 },
       gap: { label: 'Gap', desc: 'Bank Competition', color: '#f59e0b', weight: 0.25, saturationLimit: 5 },
       infra: { label: 'Comm', desc: 'Retail + Commercial', color: '#ec4899', weight: 0.10, saturationLimit: 15 },
@@ -97,7 +97,7 @@ export const DOMAIN_CONFIG: Record<DomainId, DomainConfig> = {
     competitorTypes: ['supermarket', 'department_store', 'convenience_store'],
     infraTypes: ['cafe', 'restaurant', 'shopping_mall', 'movie_theater'],
     scoring: {
-      demand: { label: 'Catchment', desc: 'Residents + Corporates', color: '#8b5cf6', weight: 0.35, saturationLimit: 30 },
+      demand: { label: 'Catchment', desc: 'Residents + Corporates', color: '#8b5cf6', weight: 0.35, saturationLimit: 20 },
       connectivity: { label: 'Transit', desc: 'Metro + Bus Hubs', color: '#34d399', weight: 0.20, saturationLimit: 10 },
       gap: { label: 'Supply Gap', desc: 'Retail Competition', color: '#f59e0b', weight: 0.25, saturationLimit: 6 },
       infra: { label: 'Synergy', desc: 'Cafes & Entertainment', color: '#ec4899', weight: 0.20, saturationLimit: 20 },

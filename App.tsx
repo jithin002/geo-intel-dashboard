@@ -41,10 +41,13 @@ const synergyIcon = new L.Icon({
     iconUrl: 'https://cdn-icons-png.flaticon.com/512/3054/3054889.png', // Coffee
     iconSize: [20, 20],
 });
-const retailIcon = new L.Icon({
-    iconUrl: 'https://cdn-icons-png.flaticon.com/512/3081/3081559.png', // Shopping store
-    iconSize: [24, 24],
-    className: 'drop-shadow-md'
+const mallIcon = new L.Icon({
+    iconUrl: 'https://cdn-icons-png.freepik.com/512/7835/7835563.png', // Shopping bag / mall
+    iconSize: [22, 22],
+});
+const commercialIcon = new L.Icon({
+    iconUrl: 'https://cdn-icons-png.flaticon.com/512/7991/7991011.png', // Storefront / commercial
+    iconSize: [22, 22],
 });
 const corporateIcon = new L.Icon({
     iconUrl: 'https://cdn-icons-png.flaticon.com/512/3061/3061341.png', // Office Building
@@ -69,10 +72,10 @@ const busIcon = new L.Icon({
 
 // Domain → competitor icon mapping
 const DOMAIN_ICON_MAP = {
-    gym: { icon: gymIcon, emoji: '🏋️', infraEmoji: '☕', infraLabel: 'LIFESTYLE' },
-    restaurant: { icon: restaurantIcon, emoji: '🍽️', infraEmoji: '🛍️', infraLabel: 'FOOTFALL' },
-    bank: { icon: bankIcon, emoji: '🏦', infraEmoji: '🏬', infraLabel: 'COMMERCIAL' },
-    retail: { icon: retailIcon, emoji: '🛍️', infraEmoji: '🍿', infraLabel: 'SYNERGY' }
+    gym: { icon: gymIcon, emoji: '🏋️', infraEmoji: '☕', infraLabel: 'LIFESTYLE', infraIcon: synergyIcon },
+    restaurant: { icon: restaurantIcon, emoji: '🍽️', infraEmoji: '🛍️', infraLabel: 'FOOTFALL', infraIcon: mallIcon },
+    bank: { icon: bankIcon, emoji: '🏦', infraEmoji: '🏬', infraLabel: 'COMMERCIAL', infraIcon: commercialIcon },
+    retail: { icon: synergyIcon, emoji: '🛍️', infraEmoji: '🍿', infraLabel: 'SYNERGY', infraIcon: mallIcon },
 };
 
 const getIconForType = (type: LocationType) => {
@@ -776,6 +779,7 @@ const App: React.FC = () => {
                 recentMessages: recentContext,
                 currentLocation: selectedPos || undefined,
                 selectedWard: selectedWard || undefined,
+                radius: searchRadius,
                 scores: scores || undefined,
                 realPOIs: realPOIs,
                 wardClusters
@@ -977,7 +981,7 @@ const App: React.FC = () => {
                     {selectedPos && realPOIs.cafes.length > 0 && realPOIs.cafes.map((cafe, idx) => {
                         const domainMeta = DOMAIN_ICON_MAP[activeDomain];
                         return (
-                            <Marker key={`infra-${idx}`} position={[cafe.location.lat, cafe.location.lng]} icon={synergyIcon}>
+                            <Marker key={`infra-${idx}`} position={[cafe.location.lat, cafe.location.lng]} icon={domainMeta.infraIcon}>
                                 <Popup>
                                     <div className="p-2 min-w-[160px]">
                                         <div className="font-black text-slate-800 text-sm mb-1">{domainMeta.infraEmoji} {cafe.displayName}</div>
@@ -1207,7 +1211,7 @@ const App: React.FC = () => {
                         <div className="flex-shrink-0 flex items-center gap-2">
                             <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-600 to-purple-600 flex items-center justify-center text-white font-black shadow-lg">G</div>
                             <div className="hidden sm:block">
-                                <h1 className="text-sm font-black text-slate-900 tracking-tight leading-none">Geo-Intel <span className="text-indigo-600">V8</span></h1>
+                                <h1 className="text-sm font-black text-slate-900 tracking-tight leading-none">Geo-Intel <span className="text-indigo-600" style={{ fontSize: '0.6rem' }}>beta</span></h1>
                             </div>
                         </div>
 
