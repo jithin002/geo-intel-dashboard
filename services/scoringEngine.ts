@@ -10,15 +10,13 @@ export interface CalculatedScores {
 }
 
 /**
- * Normalizes a count against a saturation limit to yield a 0-100 score.
- * Example: if limit is 40, and count is 40+, score is 100.
- * If count is 0, score is 0.
- * The scaling is logarithmic so the first few POIs matter more than the later ones.
+ * Linear normalisation: count / limit, capped at 100.
+ * Half the cap → half the score (50%), unlike log which gave 78%.
+ * This accurately reflects what the raw API count represents.
  */
-function logNorm(count: number, limit: number): number {
-    // Guard: if limit is 0 or count/limit is non-finite, return 0 instead of NaN
+function linearNorm(count: number, limit: number): number {
     if (!limit || limit <= 0) return 0;
-    const result = (Math.log1p(count) / Math.log1p(limit)) * 100;
+    const result = (count / limit) * 100;
     return isFinite(result) ? result : 0;
 }
 
@@ -28,9 +26,78 @@ function clampScore(val: number): number {
     return Math.max(0, Math.min(100, Math.round(val)));
 }
 
+// ─── Value-Weighted Counting Generators ──────────────────────────────
+
+/**
+ * Calculates distance in meters between two lat/lng points using the Haversine formula.
+ */
+function getDistanceMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const R = 6371e3; // Earth radius in meters
+    const rad = Math.PI / 180;
+    const dLat = (lat2 - lat1) * rad;
+    const dLon = (lon2 - lon1) * rad;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(lat1 * rad) * Math.cos(lat2 * rad) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+}
+
+/**
+ * Transforms an array of PlaceResults into an "Effective Count" instead of a flat raw count.
+ * 1. Distance Falloff: Places closer to the pin count for more (up to 1.0). Places at the edge count for less (~0.1).
+ * 2. Quality Adjustment: If supportRating is true, highly rated places (>3.5 & 5+ reviews) get a +5% bump. Poor get -5%.
+ */
+function calculateEffectiveCount(
+    places: any[],
+    centerLat: number,
+    centerLng: number,
+    searchRadius: number,
+    supportRating: boolean = false
+): number {
+    if (!places || places.length === 0) return 0;
+
+    let effectiveTotal = 0;
+
+    for (const p of places) {
+        if (!p.location || !p.location.lat || !p.location.lng) {
+            effectiveTotal += 0.5; // fallback
+            continue;
+        }
+
+        // 1. Distance Falloff (Gravity Model)
+        const dist = getDistanceMeters(centerLat, centerLng, p.location.lat, p.location.lng);
+        // Clamp distance to radius just in case API returns something slightly outside
+        const clampedDist = Math.min(dist, searchRadius);
+        // Weight: 1.0 at center, 0.4 at the very edge (eased from 0.1 so edge places still hold value)
+        let weight = 1.0 - (0.6 * (clampedDist / Math.max(searchRadius, 1)));
+
+        // 2. Softened Quality Adjustment (only if SKU supported)
+        if (supportRating) {
+            // Respecting user request: 3.5 is the threshold for a "good" place
+            if (p.rating !== undefined && p.userRatingCount && p.userRatingCount >= 5) {
+                if (p.rating >= 3.5) {
+                    weight *= 1.05; // +5% bonus
+                } else {
+                    weight *= 0.95; // -5% penalty
+                }
+            }
+        }
+
+        effectiveTotal += weight;
+    }
+
+    return effectiveTotal;
+}
+
 /**
  * Generic Domain Scoring Engine
  * Decoupled from React to ensure pure business logic
+ *
+ * Calibration notes (v2):
+ *  - Switched from logarithmic → linear scaling so 10/20 cap = 50% score (not 78%)
+ *  - Added saturation penalty: oversupplied markets lose 10-25 pts from totalScore
+ *  - No virtual scaling: we score actual API counts as-is for accuracy
  */
 export function calculateDomainScores(
     intel: DomainLocationIntelligence | LocationIntelligence,
@@ -43,80 +110,113 @@ export function calculateDomainScores(
     // Ensure we handle both the 'gym' intel structure and the generic 'domain' intel structure
     const isGymStruct = 'gyms' in intel;
 
-    // Extract raw counts (safely handling both interfaces)
-    const competitorsCt = isGymStruct ? (intel as any).gyms?.total || 0 : (intel as any).competitors?.total || 0;
-    const apartmentsCt = intel.apartments?.total || 0;
-    const officesCt = (intel as any).corporateOffices?.total || 0;
-    const transitCt = (intel as any).transitStations?.total || 0;
+    // Determine center pin coordinates from the first valid place (as a generic fallback),
+    // or assume the intel object contains the original search center if available.
+    // For this module, we will extract the center from the first POI found as a proxy
+    // since the strict center lat/lng isn't passed down to standard scoring functions yet.
+    // However, App.tsx passes searchRadiusMeters now. We will extract a proxy center.
+    let cLat = 0, cLng = 0;
+    const allPlaces = [
+        ...(isGymStruct ? (intel as any).gyms?.places || [] : []),
+        ...((intel as any).competitors?.places || []),
+        ...(intel.apartments?.places || [])
+    ];
+    if (allPlaces.length > 0 && allPlaces[0].location) {
+        cLat = allPlaces[0].location.lat;
+        cLng = allPlaces[0].location.lng;
+    }
 
-    const effectiveCompetitorsCt = competitorsCt;
+    // Extract Value-Weighted Effective Counts (safely handling both interfaces)
+    const competitorsPlaces = isGymStruct ? (intel as any).gyms?.places || [] : (intel as any).competitors?.places || [];
+    const competitorsCt = calculateEffectiveCount(competitorsPlaces, cLat, cLng, searchRadiusMeters, true);
+
+    const apartmentsCt = calculateEffectiveCount(intel.apartments?.places || [], cLat, cLng, searchRadiusMeters, false);
+    const officesCt = calculateEffectiveCount((intel as any).corporateOffices?.places || [], cLat, cLng, searchRadiusMeters, false);
+
+    // Transit is evaluated slightly differently later, but we capture the base places
+    const transitPlaces = (intel as any).transitStations?.places || [];
+    const transitCt = calculateEffectiveCount(transitPlaces, cLat, cLng, searchRadiusMeters, false);
 
     let infraCt = 0;
     if (domainId === 'gym') {
-        infraCt = (intel as any).vibe?.total || 0;
-    } else if (domainId === 'restaurant') {
-        // specific generic intel
-        infraCt = (intel as any).infraSynergy?.total || 0;
+        infraCt = calculateEffectiveCount((intel as any).vibe?.places || [], cLat, cLng, searchRadiusMeters, true);
     } else {
-        infraCt = (intel as any).infraSynergy?.total || 0;
+        infraCt = calculateEffectiveCount((intel as any).infraSynergy?.places || [], cLat, cLng, searchRadiusMeters, true);
     }
 
-    // Advanced Connectivity Breakdown (Metro vs Bus)
-    // Real implementation would inspect transit types, but fallback to total if unavailable
-    const transitPlaces = (intel as any).transitStations?.places || [];
-    const metroCt = transitPlaces.filter((p: any) => p.types?.some((t: string) => t.includes('subway') || t.includes('light_rail'))).length;
-    const busCt = transitCt - metroCt;
+    // Connectivity: separate metro (high value) from bus, still using effective counting
+    const metroPlaces = transitPlaces.filter((p: any) =>
+        p.types?.some((t: string) => t.includes('subway') || t.includes('light_rail'))
+    );
+    const busPlaces = transitPlaces.filter((p: any) =>
+        !p.types?.some((t: string) => t.includes('subway') || t.includes('light_rail'))
+    );
+    const metroCt = calculateEffectiveCount(metroPlaces, cLat, cLng, searchRadiusMeters, false);
+    const busCt = calculateEffectiveCount(busPlaces, cLat, cLng, searchRadiusMeters, false);
 
-    // --- Scoring Computations using domain configuration saturation limits ---
-
-    // 1. Demand Score
+    // ─── 1. Demand Score ────────────────────────────────────────────────────
     let demandRaw = 0;
+    const dLimit = config.scoring.demand.saturationLimit;
+
     if (domainId === 'gym') {
-        demandRaw = logNorm(apartmentsCt, 40) * 0.55 + logNorm(officesCt, 30) * 0.20 + logNorm(infraCt, 30) * 0.25;
+        demandRaw = linearNorm(apartmentsCt, dLimit) * 0.55
+            + linearNorm(officesCt, dLimit) * 0.20
+            + linearNorm(infraCt, dLimit) * 0.25;
     } else if (domainId === 'restaurant') {
-        // Students (universities) extracted from infraSynergy; transit adds commuter demand
         const universities = (intel as any).infraSynergy?.places?.filter(
             (p: any) => p.types?.includes('university')
         )?.length || 0;
-        demandRaw = logNorm(apartmentsCt, config.scoring.demand.saturationLimit) * 0.35
-            + logNorm(officesCt, config.scoring.demand.saturationLimit) * 0.40
-            + logNorm(universities, 5) * 0.15   // cap at 5; beyond that it's noise
-            + logNorm(transitCt, 8) * 0.10;      // transit stops → commuter lunch/dinner traffic
+        demandRaw = linearNorm(apartmentsCt, dLimit) * 0.35
+            + linearNorm(officesCt, dLimit) * 0.40
+            + linearNorm(universities, 5) * 0.15
+            + linearNorm(transitCt, 8) * 0.10;
     } else if (domainId === 'bank') {
-        demandRaw = logNorm(apartmentsCt, config.scoring.demand.saturationLimit) * 0.50
-            + logNorm(officesCt, config.scoring.demand.saturationLimit) * 0.50;
+        demandRaw = linearNorm(apartmentsCt, dLimit) * 0.50
+            + linearNorm(officesCt, dLimit) * 0.50;
     } else if (domainId === 'retail') {
-        demandRaw = logNorm(apartmentsCt, config.scoring.demand.saturationLimit) * 0.60
-            + logNorm(officesCt, config.scoring.demand.saturationLimit) * 0.40;
+        demandRaw = linearNorm(apartmentsCt, dLimit) * 0.60
+            + linearNorm(officesCt, dLimit) * 0.40;
     }
     const demandScore = clampScore(demandRaw);
 
-    // 2. Connectivity Score
-    // Metros generally carry much more weight than busses
-    const connRaw = logNorm(metroCt, config.scoring.connectivity.saturationLimit) * 0.65
-        + logNorm(busCt, config.scoring.connectivity.saturationLimit * 2) * 0.35;
+    // ─── 2. Connectivity Score ──────────────────────────────────────────────
+    const cLimit = config.scoring.connectivity.saturationLimit;
+    const connRaw = linearNorm(metroCt, cLimit) * 0.65
+        + linearNorm(busCt, cLimit * 2) * 0.35;
     const connScore = clampScore(connRaw);
 
-    // 3. Gap Score (Supply vs Demand)
-    // How many demand units are there for every competitor?
-    // High gap score = High opportunity (low competition)
+    // ─── 3. Gap Score (Supply vs Demand) ────────────────────────────────────
+    // gapRatio: how many demand units per competitor (higher = more opportunity)
     const demandUnits = apartmentsCt + (officesCt * 0.8) + (infraCt * 0.5);
-    // effectiveCompetitorsCt = 4★+ rated count for restaurants; full count for other domains
-    const gapRatio = demandUnits / Math.max(effectiveCompetitorsCt, 1);
-    const gapRaw = logNorm(gapRatio, config.scoring.gap.saturationLimit);
+    const gapRatio = demandUnits / Math.max(competitorsCt, 1);
+    const gapRaw = linearNorm(gapRatio, config.scoring.gap.saturationLimit);
     const gapScore = clampScore(gapRaw);
 
-    // 4. Infrastructure / Vibe Score
-    const infraRaw = logNorm(infraCt, config.scoring.infra.saturationLimit);
+    // ─── 4. Infrastructure / Vibe Score ─────────────────────────────────────
+    const infraRaw = linearNorm(infraCt, config.scoring.infra.saturationLimit);
     const infraScore = clampScore(infraRaw);
 
-    // 5. Total Weighted Score
-    const totalScore = clampScore(
+    // ─── 5. Weighted Total ───────────────────────────────────────────────────
+    let totalRaw =
         demandScore * config.scoring.demand.weight +
         connScore * config.scoring.connectivity.weight +
         gapScore * config.scoring.gap.weight +
-        infraScore * config.scoring.infra.weight
-    );
+        infraScore * config.scoring.infra.weight;
+
+    // ─── 6. Saturation Penalty ──────────────────────────────────────────────
+    // Over-competition makes a location risky even with high demand.
+    // This pulls saturated markets out of the artificially high zone.
+    //   gapRatio < 1 → severe oversupply (more competitors than demand units) → -25 pts
+    //   gapRatio < 2 → high competition (narrow market)                       → -10 pts
+    let saturationPenalty = 0;
+    if (gapRatio < 1) {
+        saturationPenalty = 25;
+    } else if (gapRatio < 2) {
+        saturationPenalty = 10;
+    }
+    totalRaw = Math.max(0, totalRaw - saturationPenalty);
+
+    const totalScore = clampScore(totalRaw);
 
     return {
         demographicLoad: demandScore || 0,
