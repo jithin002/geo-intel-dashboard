@@ -856,6 +856,7 @@ const App: React.FC = () => {
                     case 'navigate':
                         if (action.payload.location) {
                             setSelectedPos(action.payload.location);
+                            setSelectedCluster(null); // Unlock UI from any previously clicked map cluster
                             setMapZoom(action.payload.zoom || 14);
 
                             if (action.payload.wardName) {
