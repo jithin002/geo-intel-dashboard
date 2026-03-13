@@ -1,0 +1,23 @@
+# .gcloudignore file for GCP Cloud Build
+# Files to exclude when deploying to GCP
+
+node_modules/
+npm-debug.log
+dist/
+.git
+.gitignore
+.env.local
+.env.*.local
+README.md
+*.md
+.DS_Store
+.vscode
+.idea
+coverage
+*.log
+.github
+.eslintrc
+.prettierrc
+docker-compose.yml
+DEPLOYMENT.md
+GCP-DEPLOYMENT-GUIDE.md

@@ -1,0 +1,13 @@
+{
+  "name": "gemini-proxy",
+  "version": "1.0.0",
+  "description": "Secure proxy for Gemini API calls",
+  "main": "index.js",
+  "dependencies": {
+    "@google-cloud/functions-framework": "^3.5.0",
+    "@google/genai": "^1.37.0"
+  },
+  "engines": {
+    "node": "18"
+  }
+}
