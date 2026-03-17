@@ -168,17 +168,18 @@ const MapRevalidator = () => {
     return null;
 };
 
-// Component to control map zoom and center
-const MapZoomController = ({ center, zoom }: { center: [number, number] | null, zoom: number }) => {
+// Component to control map zoom and center.
+// navigateKey: increment to force a re-pan even when center/zoom are unchanged.
+const MapZoomController = ({ center, zoom, navigateKey }: { center: [number, number] | null, zoom: number, navigateKey: number }) => {
     const map = useMap();
     useEffect(() => {
-        if (center) {
-            map.setView(center, zoom, { animate: true, duration: 0.8 });
-        } else {
-            // Reset to Bangalore center if no selection
-            map.setView([BANGALORE_CENTER.lat, BANGALORE_CENTER.lng], zoom, { animate: true, duration: 0.5 });
-        }
-    }, [center, zoom, map]);
+        const target = center ?? [BANGALORE_CENTER.lat, BANGALORE_CENTER.lng] as [number, number];
+        // Stop any in-progress pan/zoom animation first, then flyTo.
+        // map.setView() with animate:true can silently fail when a prior animation is
+        // still active (e.g. after a cluster click). flyTo() + stop() is always reliable.
+        map.stop();
+        map.flyTo(target, zoom, { duration: 0.6, easeLinearity: 0.5 });
+    }, [center, navigateKey, zoom, map]);
     return null;
 };
 
@@ -308,6 +309,8 @@ const App: React.FC = () => {
     const [selectedWard, setSelectedWard] = useState<string | null>(null);
     const [mapZoom, setMapZoom] = useState<number>(11); // Start zoomed out
     const [searchQuery, setSearchQuery] = useState<string>(''); // Place search query
+    // Used to force MapZoomController to re-pan even if center/zoom didn't change
+    const [mapNavigateKey, setMapNavigateKey] = useState<number>(0);
 
     // NEW: Dynamic ward clusters loaded from CSV
     const [wardClusters, setWardClusters] = useState<any[]>([]);
@@ -322,8 +325,8 @@ const App: React.FC = () => {
     }>>({});
 
     // NEW: Search query results
-    const [searchResults, setSearchResults] = useState<any[]>([]);
     const [queryDescription, setQueryDescription] = useState<string>('');
+    const [searchResults, setSearchResults] = useState<any[]>([]);
 
     // CHAT: Conversation state
     const [chatOpen, setChatOpen] = useState(false);
@@ -337,8 +340,72 @@ const App: React.FC = () => {
     const searchRecognitionRef = useRef<any>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
 
-    // DOMAIN: Active analysis domain (gym / restaurant / bank)
     const [activeDomain, setActiveDomain] = useState<DomainId>('gym');
+    const [mobileView, setMobileView] = useState<'map' | 'analytics' | 'chat'>('map');
+    const [sheetState, setSheetState] = useState<'peek' | 'half' | 'full'>('half');
+
+    // CUSTOM PARAMETERS: user-defined scoring factors
+    interface CustomParam {
+        id: string;
+        label: string;
+        poiType: string;
+        importance: number;   // 1–5 slider
+        saturationLimit: number;
+        score?: number;
+        places?: any[];
+        color?: string;
+    }
+    const CUSTOM_POI_OPTIONS = [
+        { label: 'School / Education', value: 'school' },
+        { label: 'Hospital / Clinic', value: 'hospital' },
+        { label: 'Park / Outdoors', value: 'park' },
+        { label: 'Temple', value: 'hindu_temple' },
+        { label: 'Mosque', value: 'mosque' },
+        { label: 'Church', value: 'church' },
+        { label: 'University Campus', value: 'university' },
+        { label: 'Supermarket', value: 'supermarket' },
+        { label: 'Cinema / Theatre', value: 'movie_theater' },
+        { label: 'Gym / Fitness', value: 'gym' },
+        { label: 'Pharmacy', value: 'pharmacy' },
+        { label: 'Restaurant', value: 'restaurant' },
+        { label: 'Metro Station', value: 'subway_station' },
+        { label: 'Parking Lot', value: 'parking' },
+    ];
+    // Dynamic colors for custom parameters to keep them distinct
+    const CUSTOM_COLORS = ['#8b5cf6', '#ec4899', '#f97316', '#14b8a6', '#eab308'];
+    const importanceWeightMap: Record<number, number> = { 1: 0.05, 2: 0.08, 3: 0.12, 4: 0.18, 5: 0.25 };
+    const satLimitOptions = [3, 5, 8, 12, 20];
+
+    const [customParams, setCustomParams] = useState<CustomParam[]>([]);
+    const [customParamForm, setCustomParamForm] = useState({ label: '', poiType: 'school', importance: 3, saturationLimit: 8 });
+    const [showCustomParamPanel, setShowCustomParamPanel] = useState(false);
+    const [customPOIs, setCustomPOIs] = useState<Record<string, any[]>>({}); // id → places
+
+    // REF: Sync custom params to a ref so performAnalysis can read them without trigging re-runs
+    const customParamsRef = useRef<CustomParam[]>([]);
+    useEffect(() => {
+        customParamsRef.current = customParams;
+    }, [customParams]);
+
+    const addCustomParam = () => {
+        if (customParams.length >= 3 || !customParamForm.label.trim()) return;
+        const color = CUSTOM_COLORS[customParams.length % CUSTOM_COLORS.length];
+        const newParam: CustomParam = {
+            id: Math.random().toString(36).slice(2),
+            label: customParamForm.label.trim(),
+            poiType: customParamForm.poiType,
+            importance: customParamForm.importance,
+            saturationLimit: customParamForm.saturationLimit,
+            color
+        };
+        setCustomParams(prev => [...prev, newParam]);
+        setCustomParamForm({ label: '', poiType: 'school', importance: 3, saturationLimit: 8 });
+    };
+
+    const removeCustomParam = (id: string) => {
+        setCustomParams(prev => prev.filter(p => p.id !== id));
+        setCustomPOIs(prev => { const n = { ...prev }; delete n[id]; return n; });
+    };
 
 
     // AUTOCOMPLETE: Compute suggestions whenever searchQuery changes
@@ -404,6 +471,7 @@ const App: React.FC = () => {
         setSelectedCluster(clusterId);
         setSelectedWard(null);
         setMapZoom(15); // Zoom in for analysis
+        setMapNavigateKey(k => k + 1);
     }, []);
 
     const handleWardClick = useCallback((lat: number, lng: number, wardName: string) => {
@@ -411,24 +479,25 @@ const App: React.FC = () => {
         setSelectedWard(wardName);
         setSelectedCluster(null);
         setMapZoom(14); // Zoom in for analysis
+        setMapNavigateKey(k => k + 1);
     }, []);
 
     // NEW: Intelligent query search (supports natural language + domain detection)
     const handlePlaceSearch = useCallback(async (query: string) => {
         if (!query) {
-            setSearchResults([]);
             setQueryDescription('');
+            setSearchResults([]);
             return;
         }
+
+        // Clear old search results at the start of a new search
+        setSearchResults([]);
 
         // Detect if the user input is a freeform question (natural language QA)
         const isQuestion = /\?|^what\b|^where\b|^how\b|^is\b|^are\b|^who\b|^when\b|^which\b|^tell\b|^show\b/i.test(query.trim());
 
         if (isQuestion) {
-            console.log("🗣️ Conversational query detected, routing to chat:", query);
-            setChatOpen(true);
-            setSearchQuery('');
-            handleUserMessage(query);
+            // Skip - questions handled at input level (clear results before returning)
             return;
         }
 
@@ -455,8 +524,9 @@ const App: React.FC = () => {
                 console.log(`🔍 Query: "${query}"`);
                 console.log(`📊 Found ${results.length} results`);
 
-                setSearchResults(results);
+                setChatOpen(false);  // Close chat when showing search results
                 setQueryDescription(description + domainNote);
+                setSearchResults(results);  // Display results
 
                 // If single result, zoom to it automatically
                 if (results.length === 1) {
@@ -465,6 +535,7 @@ const App: React.FC = () => {
                     setSelectedCluster(ward.id);
                     setSelectedWard(null);
                     setMapZoom(14);
+                    setMapNavigateKey(k => k + 1);
                 }
                 return;
             }
@@ -494,11 +565,12 @@ const App: React.FC = () => {
 
                 console.log(`📍 Found external place: ${place.display_name}`);
 
-                setSearchResults([]);
+                setChatOpen(false);  // Close chat when showing search results
                 setSelectedPos([lat, lng]);
                 setSelectedCluster(null);
                 setSelectedWard(null);
                 setMapZoom(14);
+                setMapNavigateKey(k => k + 1);
 
                 const placeName = place.display_name.split(',')[0];
                 setQueryDescription(
@@ -512,11 +584,12 @@ const App: React.FC = () => {
                 const places = await textSearch(geoQuery);
 
                 if (places && places.length > 0) {
-                    setSearchResults(places);
+                    setChatOpen(false);  // Close chat when showing search results
                     setQueryDescription(
                         `Found ${places.length} place(s) from Google Places for "${geoQuery}"` +
                         (intent.hasDomain ? ` · ${intent.domain} mode active` : '')
                     );
+                    setSearchResults(places);  // Display results
                     const first = places[0];
                     if (first.location && first.location.lat && first.location.lng) {
                         setSelectedPos([first.location.lat, first.location.lng]);
@@ -524,6 +597,7 @@ const App: React.FC = () => {
                     }
                 } else {
                     setQueryDescription(`No results found for "${geoQuery}"`);
+                    setSearchResults([]);
                     alert(`Location "${geoQuery}" not found.`);
                 }
             }
@@ -632,22 +706,33 @@ const App: React.FC = () => {
         }
     }, [selectedPos, searchRadius]);
 
-    const performAnalysis = useCallback(async (overrideDomain?: string) => {
-        if (!selectedPos) return;
+    const performAnalysis = useCallback(async (
+        overrideDomain?: string,
+        overrideCluster?: string | null,
+        overrideLocation?: [number, number]
+    ) => {
+        // Use overrideLocation when provided (chat navigation) to avoid stale selectedPos closure.
+        const analysisPos = overrideLocation || selectedPos;
+        if (!analysisPos) return;
         setIsAnalyzing(true);
         setAiInsight('Fetching real POI data from Google Places...');
 
         // Use overrideDomain if supplied (e.g. from chat), otherwise use active UI domain
         const domainToUse = (overrideDomain || activeDomain) as keyof typeof DOMAIN_CONFIG;
+        // overrideCluster lets callers pass null explicitly to avoid the stale state closure
+        // that occurs when setSelectedCluster(null) hasn't propagated before performAnalysis runs.
+        const effectiveCluster = overrideCluster !== undefined ? overrideCluster : selectedCluster;
 
         try {
             const domain = DOMAIN_CONFIG[domainToUse];
+            let realScores: any = null;
+            let currentTotalScore = 0;
 
             if (domainToUse === 'gym') {
                 // ── GYM DOMAIN: Our advanced V2 scoring ─────────────────────
                 const intel = await getLocationIntelligence(
-                    selectedPos[0],
-                    selectedPos[1],
+                    analysisPos[0],
+                    analysisPos[1],
                     searchRadius
                 );
 
@@ -660,12 +745,13 @@ const App: React.FC = () => {
                     parks: []
                 });
 
-                const realScores = calculateDomainScores(intel, domainToUse, searchRadius);
+                realScores = calculateDomainScores(intel, domainToUse, searchRadius);
+                currentTotalScore = realScores.total;
 
                 console.log('📊 SCORING V2 (GYM):', realScores);
                 setScores(realScores);
 
-                if (selectedCluster) {
+                if (effectiveCluster) {
                     const opportunityScore = realScores.total / 100;
                     const finalScore = opportunityScore;
                     const demographicLoad = realScores.demographicLoad;
@@ -677,7 +763,7 @@ const App: React.FC = () => {
                     else growthRate = 0.02;
                     if (demographicLoad > 70) growthRate += 0.03;
                     if (intel.corporateOffices.total > 10) growthRate += 0.02;
-                    setWardScores(prev => ({ ...prev, [selectedCluster]: { opportunityScore, finalScore, growthRate, demographicLoad, competitorDensity } }));
+                    setWardScores(prev => ({ ...prev, [effectiveCluster]: { opportunityScore, finalScore, growthRate, demographicLoad, competitorDensity } }));
                 }
 
                 const recommendation = generateDataDrivenRecommendation(intel, realScores);
@@ -686,8 +772,8 @@ const App: React.FC = () => {
             } else {
                 // ── RESTAURANT / BANK DOMAIN: Generic domain intelligence ────
                 const intel = await getDomainIntelligence(
-                    selectedPos[0],
-                    selectedPos[1],
+                    analysisPos[0],
+                    analysisPos[1],
                     searchRadius,
                     domain.competitorTypes,
                     domain.infraTypes
@@ -704,30 +790,78 @@ const App: React.FC = () => {
                 });
 
                 // Domain-specific scoring using dynamically loaded engine
-                const realScores = calculateDomainScores(intel, domainToUse, searchRadius);
+                realScores = calculateDomainScores(intel, domainToUse, searchRadius);
+                currentTotalScore = realScores.total;
 
-                console.log(`📊 SCORING (${domain.label}):`, realScores);
-                setScores(realScores);
-
-                if (selectedCluster) {
+                if (effectiveCluster) {
                     const opportunityScore = realScores.total / 100;
                     const finalScore = opportunityScore;
                     let growthRate = intel.marketGap === 'UNTAPPED' ? 0.15 :
                         intel.marketGap === 'OPPORTUNITY' ? 0.10 :
                             intel.marketGap === 'COMPETITIVE' ? 0.05 : 0.02;
                     if (realScores.demographicLoad > 70) growthRate += 0.03;
-                    setWardScores(prev => ({ ...prev, [selectedCluster]: { opportunityScore, finalScore, growthRate, demographicLoad: realScores.demographicLoad, competitorDensity: intel.competitors.total } }));
+                    setWardScores(prev => ({ ...prev, [effectiveCluster]: { opportunityScore, finalScore, growthRate, demographicLoad: realScores.demographicLoad, competitorDensity: intel.competitors.total } }));
                 }
 
                 const recommendation = generateDomainRecommendation(intel, domainToUse);
                 setAiInsight(recommendation);
             }
 
+            // ── Custom Parameters: fetch + score each user-defined param ──────────
+            const currentCustomParams = customParamsRef.current;
+            if (currentCustomParams.length > 0) {
+                const { nearbySearch: customNearby } = await import('./services/placesAPIService');
+                const BASIC_MASK = 'places.id,places.location,places.displayName,places.types,places.businessStatus';
+                const updatedParams = [...currentCustomParams];
+                const newPOIs: Record<string, any[]> = {};
+                let customWeightSum = 0;
+                let customWeightedScoreSum = 0;
+
+                await Promise.all(currentCustomParams.map(async (param, i) => {
+                    try {
+                        // Use primaryOnly: true to reduce false positives (secondary matches)
+                        const rawPlaces = await customNearby(selectedPos[0], selectedPos[1], searchRadius, [param.poiType], true, BASIC_MASK);
+                        
+                        // Filter for OPERATIONAL businesses only
+                        const places = rawPlaces.filter(p => !p.businessStatus || p.businessStatus === 'OPERATIONAL');
+                        
+                        newPOIs[param.id] = places;
+                        const raw = Math.min(places.length, param.saturationLimit);
+                        const pScore = Math.round((raw / param.saturationLimit) * 100);
+                        updatedParams[i] = { ...param, score: pScore, places };
+                        
+                        // ── Apply Importance Weight to Final Score ──
+                        const weight = importanceWeightMap[param.importance] || 0.12; 
+                        customWeightSum += weight;
+                        customWeightedScoreSum += (pScore * weight);
+
+                    } catch {
+                        updatedParams[i] = { ...param, score: 0, places: [] };
+                    }
+                }));
+
+                // Re-balance the final Suitability Score
+                if (customWeightSum > 0) {
+                    // Apply custom weights. If users add a lot of 25% importance params, it can completely override the base score. (Max 100%)
+                    const safeWeightSum = Math.min(customWeightSum, 1.0); 
+                    const baseWeight = 1 - safeWeightSum;
+                    currentTotalScore = Math.round((currentTotalScore * baseWeight) + customWeightedScoreSum);
+                }
+
+                setCustomParams(updatedParams);
+                setCustomPOIs(newPOIs);
+            }
+
+            if (realScores) {
+                console.log(`📊 FINAL SCORING (${domain.label}):`, { ...realScores, total: currentTotalScore });
+                setScores({ ...realScores, total: currentTotalScore });
+            }
+
             setIsAnalyzing(false);
         } catch (error) {
             console.error('Places API analysis failed:', error);
             setAiInsight('⚠️ Places API unavailable. Add GOOGLE_MAPS_API_KEY to .env.local for real POI data. Using fallback mock data...');
-            const fallbackScores = calculateSuitability(selectedPos[0], selectedPos[1], searchRadius / 1000);
+            const fallbackScores = calculateSuitability(analysisPos[0], analysisPos[1], searchRadius / 1000);
             setScores(fallbackScores);
             setIsAnalyzing(false);
         }
@@ -747,6 +881,13 @@ const App: React.FC = () => {
             if (analysisDebounceRef.current) clearTimeout(analysisDebounceRef.current);
         };
     }, [selectedPos, activeDomain, performAnalysis]);
+
+    // Re-run analysis automatically when a custom parameter is added or removed
+    useEffect(() => {
+        if (selectedPos) {
+            performAnalysis();
+        }
+    }, [customParams.length, performAnalysis]);
 
     const catchmentOverlap = useMemo(() => {
         if (!selectedPos) return [];
@@ -772,13 +913,26 @@ const App: React.FC = () => {
         if (!scores) return [];
         const d = DOMAIN_CONFIG[activeDomain].scoring;
         const pct = (w: number) => `(${Math.round(w * 100)}%)`;
-        return [
+        const base = [
             { name: `${d.demand.label} ${pct(d.demand.weight)}`, score: scores.demographicLoad, color: d.demand.color, desc: d.demand.desc },
             { name: `${d.connectivity.label} ${pct(d.connectivity.weight)}`, score: scores.connectivity, color: d.connectivity.color, desc: d.connectivity.desc },
             { name: `${d.gap.label} ${pct(d.gap.weight)}`, score: scores.competitorRatio, color: d.gap.color, desc: d.gap.desc },
             { name: `${d.infra.label} ${pct(d.infra.weight)}`, score: scores.infrastructure, color: d.infra.color, desc: d.infra.desc },
         ];
-    }, [scores, activeDomain]);
+        // Append custom param bars
+        const custom = customParams
+            .filter(p => p.score !== undefined)
+            .map(p => {
+                const weightPct = Math.round((importanceWeightMap[p.importance] || 0.12) * 100);
+                return {
+                    name: `${p.label} (${weightPct}%)`,
+                    score: p.score!,
+                    color: p.color || '#a855f7',
+                    desc: `${p.poiType}`
+                };
+            });
+        return [...base, ...custom];
+    }, [scores, activeDomain, customParams]);
 
 
     const getVerdict = () => {
@@ -854,11 +1008,13 @@ const App: React.FC = () => {
                     case 'navigate':
                         if (action.payload.location) {
                             setSelectedPos(action.payload.location);
+                            setSelectedCluster(null); // Unlock UI from any previously clicked map cluster
                             setMapZoom(action.payload.zoom || 14);
+                            setMapNavigateKey(k => k + 1); // Force map to pan even if coords are same as cluster
 
-                            if (action.payload.wardName) {
-                                setSelectedWard(action.payload.wardName);
-                            }
+                            // Always clear selectedWard so old ward label doesn't persist when
+                            // the chatbot navigates to a place that has no wardName.
+                            setSelectedWard(action.payload.wardName || null);
 
                             if (action.payload.triggerAnalysis) {
                                 if (response.prefetchedIntel) {
@@ -882,16 +1038,19 @@ const App: React.FC = () => {
                                     const cachedScores = calculateDomainScores(intel, detectedDomain as DomainId, searchRadius);
                                     setScores(cachedScores);
 
-                                    // Call the correct recommendation function based on data shape
-                                    if (isGymShape) {
-                                        setAiInsight(generateDataDrivenRecommendation(intel, cachedScores));
-                                    } else {
-                                        setAiInsight(generateDomainRecommendation(intel, detectedDomain));
+                                    // For non-gym domains, fire performAnalysis in background to get
+                                    // the proper domain-specific scoring (no UI blocking, free re-use of cache)
+                                    if (detectedDomain !== 'gym') {
+                                        const chatLocation = action.payload.location;
+                                        // Pass null cluster and the explicit chat location to avoid stale closures.
+                                        setTimeout(() => { performAnalysis(detectedDomain, null, chatLocation); }, 400);
                                     }
                                 } else {
-                                    // Fallback: trigger fresh analysis with the detected domain
+                                    // Fallback: trigger fresh analysis with the detected domain.
+                                    // Pass null cluster + explicit location to avoid stale closures.
+                                    const chatLocation = action.payload.location;
                                     console.log('🔍 Triggering performAnalysis() — no prefetchedIntel, domain:', detectedDomain);
-                                    setTimeout(() => { performAnalysis(detectedDomain); }, 300);
+                                    setTimeout(() => { performAnalysis(detectedDomain, null, chatLocation); }, 300);
                                 }
                             }
                         }
@@ -922,7 +1081,8 @@ const App: React.FC = () => {
         } finally {
             setIsAITyping(false);
         }
-    }, [conversationMessages, selectedPos, selectedWard, scores, realPOIs, wardClusters, performAnalysis]);
+    }, [conversationMessages, selectedPos, selectedWard, selectedCluster, scores, realPOIs,
+        wardClusters, searchRadius, activeDomain, performAnalysis]);
 
     // Clear chat history
     const handleClearChat = useCallback(() => {
@@ -950,7 +1110,7 @@ const App: React.FC = () => {
                     {/* {showHeatmap && <HeatmapLayer locations={MOCK_LOCATIONS} />} */}
                     <MapEvents onMapClick={handleMapClick} />
                     <MapRevalidator />
-                    <MapZoomController center={selectedPos} zoom={mapZoom} />
+                    <MapZoomController center={selectedPos} zoom={mapZoom} navigateKey={mapNavigateKey} />
 
                     {selectedPos && (
                         <Circle
@@ -1210,6 +1370,48 @@ const App: React.FC = () => {
                             </Marker>
                         );
                     })}
+
+                    {/* ── Custom Parameter POI Markers (purple, radius-filtered) ── */}
+                    {selectedPos && customParams.map((param) => {
+                        const places = customPOIs[param.id] || [];
+                        const [cLat, cLng] = selectedPos;
+                        return places
+                            .filter(p => {
+                                if (!p.location?.lat || !p.location?.lng) return false;
+                                // Haversine distance check — only show within radius
+                                const R = 6371e3;
+                                const rad = Math.PI / 180;
+                                const dLat = (p.location.lat - cLat) * rad;
+                                const dLon = (p.location.lng - cLng) * rad;
+                                const a = Math.sin(dLat/2)**2 + Math.cos(cLat*rad)*Math.cos(p.location.lat*rad)*Math.sin(dLon/2)**2;
+                                const dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+                                return dist <= searchRadius;
+                            })
+                            .map((p: any, idx: number) => {
+                                const mColor = param.color || '#a855f7';
+                                const initials = (param.label || 'C').charAt(0).toUpperCase();
+                                return (
+                                    <Marker
+                                        key={`custom-${param.id}-${idx}`}
+                                        position={[p.location.lat, p.location.lng]}
+                                        icon={L.divIcon({
+                                            className: '',
+                                            html: `<div style="width:28px;height:28px;border-radius:50%;background:${mColor};border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:900;color:#fff;box-shadow:0 3px 6px rgba(0,0,0,0.3)">${initials}</div>`,
+                                            iconSize: [28, 28],
+                                            iconAnchor: [14, 14],
+                                        })}
+                                    >
+                                    <Popup>
+                                        <div style={{ minWidth: 140 }}>
+                                            <div style={{ fontWeight: 900, fontSize: 12, color: param.color || '#7c3aed', marginBottom: 2 }}>{param.label}</div>
+                                            <div style={{ fontSize: 11, color: '#334155' }}>{p.displayName?.text || p.displayName || 'Unknown'}</div>
+                                            <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>{param.poiType}</div>
+                                        </div>
+                                    </Popup>
+                                </Marker>
+                                );
+                            });
+                    })}
                 </MapContainer>
 
                 {/* Legend */}
@@ -1258,7 +1460,7 @@ const App: React.FC = () => {
                 </div>
 
                 {/* Multi-Layer Scanning Widget (Moved to Top Right HUD) */}
-                <div className="absolute top-24 right-4 lg:right-6 z-[1000] glass-panel px-3 py-2.5 rounded-xl shadow-lg border border-white/60 flex items-center gap-3 pointer-events-none transition-all duration-300">
+                <div className="absolute top-24 right-4 lg:right-6 z-[1000] glass-panel px-3 py-2.5 rounded-xl shadow-lg border border-white/60 flex items-center gap-3 pointer-events-none transition-all duration-300 hidden md:flex">
                     <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-slate-900 text-white shadow-md">
                         <span className="font-black text-xs">{searchRadius < 1000 ? '500' : '1k'}</span>
                     </div>
@@ -1276,7 +1478,8 @@ const App: React.FC = () => {
             {/* ========================================== */}
 
             {/* TOP BAR: Title & Search (Dynamic & Floating) */}
-            <div className={`absolute top-4 z-30 w-[90vw] md:w-[600px] flex flex-col gap-2 pointer-events-none transition-all duration-500 ease-in-out ${showRightSidebar ? 'left-[calc(50%+160px)] -translate-x-1/2' : 'left-1/2 -translate-x-1/2'}`}>
+            {/* TOP BAR: Title & Search (Dynamic & Floating) */}
+            <div className={`absolute top-4 z-30 w-[95vw] md:w-[600px] flex flex-col gap-2 pointer-events-none transition-all duration-500 ease-in-out ${showRightSidebar ? 'lg:left-[calc(50%+160px)] lg:-translate-x-1/2' : 'left-1/2 -translate-x-1/2'} left-1/2 -translate-x-1/2`}>
                 {/* Search Bar Container */}
                 <div className="backdrop-blur-xl bg-white/80 shadow-2xl border border-white/50 rounded-2xl p-3 flex flex-col pointer-events-auto transition-all">
                     <div className="flex items-center justify-between gap-3">
@@ -1313,7 +1516,20 @@ const App: React.FC = () => {
                                             setSearchQuery(chosen);
                                             setSearchSuggestions([]);
                                             setSuggestionIndex(-1);
-                                            handlePlaceSearch(chosen);
+                                            
+                                            // Check if it's a question or normal search
+                                            const isQuestion = /\?|^what\b|^where\b|^how\b|^is\b|^are\b|^who\b|^when\b|^which\b|^tell\b|^show\b/i.test(chosen.trim());
+                                            
+                                            if (isQuestion) {
+                                                // Route to chat
+                                                setChatOpen(true);
+                                                setTimeout(() => {
+                                                    handleUserMessage(chosen);
+                                                }, 100);
+                                            } else {
+                                                // Normal location search
+                                                handlePlaceSearch(chosen);
+                                            }
                                         }
                                     } else if (e.key === 'Escape') {
                                         setSearchSuggestions([]);
@@ -1345,7 +1561,26 @@ const App: React.FC = () => {
                                     </button>
                                 )}
                                 <button
-                                    onClick={() => { setSearchSuggestions([]); handlePlaceSearch(searchQuery.trim()); }}
+                                    onClick={() => { 
+                                        const query = searchQuery.trim();
+                                        if (query) {
+                                            setSearchSuggestions([]);
+                                            
+                                            // Check if it's a question or normal search
+                                            const isQuestion = /\?|^what\b|^where\b|^how\b|^is\b|^are\b|^who\b|^when\b|^which\b|^tell\b|^show\b/i.test(query);
+                                            
+                                            if (isQuestion) {
+                                                // Route to chat
+                                                setChatOpen(true);
+                                                setTimeout(() => {
+                                                    handleUserMessage(query);
+                                                }, 100);
+                                            } else {
+                                                // Normal location search
+                                                handlePlaceSearch(query);
+                                            }
+                                        }
+                                    }}
                                     className="px-3 bg-indigo-600 text-white text-xs font-black rounded-lg hover:shadow-lg transition-all"
                                 >
                                     🔍
@@ -1385,7 +1620,6 @@ const App: React.FC = () => {
                     <div className="backdrop-blur-xl bg-white/95 shadow-2xl border border-white/50 rounded-2xl p-3 pointer-events-auto animate-in slide-in-from-top-2 duration-300">
                         <div className="flex justify-between items-center mb-2 px-1 border-b border-slate-100 pb-2">
                             <span className="text-[10px] font-black text-slate-700 uppercase tracking-widest">{queryDescription}</span>
-                            <button onClick={() => { setSearchResults([]); setSearchQuery(''); }} className="text-[9px] text-slate-400 hover:text-red-500 font-bold transition-colors">CLEAR</button>
                         </div>
                         <div className="space-y-2 max-h-[40vh] overflow-y-auto custom-scrollbar pr-1">
                             {/* Re-using exact same search result mapping logic */}
@@ -1458,12 +1692,26 @@ const App: React.FC = () => {
                 )}
             </div>
 
-            {/* LEFT SIDEBAR: Intelligence Panel */}
-            <div className={`absolute left-0 top-0 bottom-0 w-[320px] max-w-[90vw] z-[40] transition-transform duration-500 ease-in-out flex flex-col pointer-events-none ${showRightSidebar ? 'translate-x-0' : '-translate-x-full'}`}>
-                {/* Toggle Button for Right Sidebar (attached to the edge) */}
+            {/* LEFT SIDEBAR: Intelligence Panel / Bottom Sheet */}
+            <div className={`absolute bottom-0 left-0 right-0 lg:left-0 lg:top-0 lg:bottom-0 w-full lg:w-[320px] max-w-full lg:max-w-[90vw] z-[150] lg:z-[40] transition-all duration-500 ease-in-out flex flex-col pointer-events-none ${
+                // Mobile visibility / Height mapping
+                mobileView === 'analytics'
+                    ? (sheetState === 'full' ? 'h-[92dvh]' : sheetState === 'half' ? 'h-[45vh]' : 'h-[60px]')
+                    : 'max-lg:translate-y-full max-lg:opacity-0'
+            } ${
+                // Desktop visibility
+                showRightSidebar ? 'lg:translate-x-0' : 'lg:-translate-x-full'
+            }`}>
+                {/* Mobile Drag Handle */}
+                <div className="lg:hidden w-full flex flex-col items-center pt-2 pb-1 bg-white/95 backdrop-blur-xl border-t border-x border-slate-200/60 rounded-t-[2rem] pointer-events-auto"
+                    onClick={() => setSheetState(prev => prev === 'half' ? 'full' : prev === 'full' ? 'half' : 'half')}>
+                    <div className="w-12 h-1.5 bg-slate-200 rounded-full mb-1"></div>
+                </div>
+
+                {/* Toggle Button for Right Sidebar (attached to the edge) - Desktop only */}
                 <button
                     onClick={() => setShowRightSidebar(!showRightSidebar)}
-                    className="absolute -right-10 top-1/2 -translate-y-1/2 bg-white/95 backdrop-blur pointer-events-auto p-1.5 rounded-r-xl shadow-[5px_0_15px_rgba(0,0,0,0.1)] border border-l-0 border-slate-200 text-slate-600 hover:text-indigo-600 transition-colors z-50 flex items-center justify-center"
+                    className="absolute -right-10 top-1/2 -translate-y-1/2 bg-white/95 backdrop-blur pointer-events-auto p-1.5 rounded-r-xl shadow-[5px_0_15px_rgba(0,0,0,0.1)] border border-l-0 border-slate-200 text-slate-600 hover:text-indigo-600 transition-colors z-50 hidden lg:flex items-center justify-center"
                 >
                     <svg className={`w-5 h-5 transition-transform ${showRightSidebar ? '' : 'rotate-180'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
@@ -1471,10 +1719,17 @@ const App: React.FC = () => {
                 </button>
 
                 {/* Sidebar Content Container */}
-                <div className="flex-1 bg-white/95 backdrop-blur-2xl shadow-[10px_0_30px_rgba(0,0,0,0.1)] rounded-r-[2rem] border-r border-slate-200/60 p-5 overflow-y-auto custom-scrollbar pointer-events-auto flex flex-col gap-5">
-                    <header className="flex items-center justify-between pb-3 border-b border-slate-200/50 pt-2">
-                        <div>
-                            <h2 className="text-lg font-black text-slate-900 tracking-tight">Intelligence Panel</h2>
+                <div className={`flex-1 bg-white/95 lg:backdrop-blur-2xl shadow-[0_-10px_30px_rgba(0,0,0,0.1)] lg:shadow-[10px_0_30px_rgba(0,0,0,0.1)] lg:rounded-r-[2rem] border-x lg:border-l-0 lg:border-r border-slate-200/60 p-5 overflow-y-auto custom-scrollbar pointer-events-auto flex flex-col gap-5 ${mobileView === 'analytics' ? 'pb-24 pt-4' : ''}`}>
+                    <header className="flex items-center justify-between pb-3 border-b border-slate-200/50 pt-1">
+                        <div className="flex-1">
+                            <div className="flex items-center justify-between lg:block">
+                                <h2 className="text-lg font-black text-slate-900 tracking-tight">Intelligence Panel</h2>
+                                <div className="lg:hidden flex gap-2">
+                                    <button onClick={() => setSheetState(sheetState === 'full' ? 'half' : 'full')} className="text-slate-400 p-1">
+                                        {sheetState === 'full' ? '▼' : '▲'}
+                                    </button>
+                                </div>
+                            </div>
                             {(selectedCluster || selectedWard) ? (
                                 <div className="mt-1 inline-flex items-center gap-1.5 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-md">
                                     <span className="text-[10px] font-black text-indigo-700">📍 {selectedWard || wardClusters.find(c => c.id === selectedCluster)?.wardName}</span>
@@ -1583,6 +1838,63 @@ const App: React.FC = () => {
                         </ResponsiveContainer>
                     </div>
 
+                    {/* Custom Parameters Panel */}
+                    <div className="border border-purple-200 rounded-2xl overflow-hidden shrink-0">
+                        <button
+                            onClick={() => setShowCustomParamPanel(!showCustomParamPanel)}
+                            className="w-full flex items-center justify-between px-4 py-3 bg-purple-50 hover:bg-purple-100 transition-all"
+                        >
+                            <span className="text-[10px] font-black text-purple-700 uppercase tracking-widest">⚡ Custom Parameters ({customParams.length}/3)</span>
+                            <span className="text-purple-400 text-sm">{showCustomParamPanel ? '▲' : '▼'}</span>
+                        </button>
+
+                        {showCustomParamPanel && (
+                            <div className="p-3 bg-white flex flex-col gap-3">
+                                {customParams.map(p => (
+                                    <div key={p.id} className="flex items-center justify-between rounded-xl px-3 py-2 border shadow-sm" style={{ borderColor: p.color || '#e2e8f0', backgroundColor: `${p.color || '#94a3b8'}10` }}>
+                                        <div>
+                                            <div className="text-[10px] font-black" style={{ color: p.color || '#334155' }}>{p.label}</div>
+                                            <div className="text-[9px] text-slate-500 font-medium">Type: {p.poiType} · Saturation@{p.saturationLimit} · Wt: {p.importance}</div>
+                                        </div>
+                                        <button onClick={() => removeCustomParam(p.id)} className="text-slate-300 hover:text-red-500 text-xs font-bold ml-2 transition-colors">✕</button>
+                                    </div>
+                                ))}
+                                {customParams.length < 3 && (
+                                    <div className="flex flex-col gap-2 pt-1">
+                                        <input type="text" placeholder="Label, e.g. Near Schools" value={customParamForm.label}
+                                            onChange={e => setCustomParamForm(f => ({ ...f, label: e.target.value }))}
+                                            className="w-full text-[10px] border border-slate-200 rounded-xl px-3 py-2 focus:outline-none focus:border-purple-400" />
+                                        <select value={customParamForm.poiType}
+                                            onChange={e => setCustomParamForm(f => ({ ...f, poiType: e.target.value }))}
+                                            className="w-full text-[10px] border border-slate-200 rounded-xl px-3 py-2 focus:outline-none focus:border-purple-400">
+                                            {CUSTOM_POI_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                        </select>
+                                        <div className="flex gap-2 items-center">
+                                            <span className="text-[9px] text-slate-400 font-bold whitespace-nowrap">Importance</span>
+                                            <input type="range" min={1} max={5} value={customParamForm.importance}
+                                                onChange={e => setCustomParamForm(f => ({ ...f, importance: Number(e.target.value) }))}
+                                                className="flex-1 accent-purple-500" />
+                                            <span className="text-[9px] font-black text-purple-700 w-4">{customParamForm.importance}</span>
+                                        </div>
+                                        <div className="flex gap-2 items-center">
+                                            <span className="text-[9px] text-slate-400 font-bold whitespace-nowrap">Saturation at</span>
+                                            <select value={customParamForm.saturationLimit}
+                                                onChange={e => setCustomParamForm(f => ({ ...f, saturationLimit: Number(e.target.value) }))}
+                                                className="flex-1 text-[10px] border border-slate-200 rounded-xl px-2 py-1 focus:outline-none focus:border-purple-400">
+                                                {satLimitOptions.map(v => <option key={v} value={v}>{v} POIs = 100%</option>)}
+                                            </select>
+                                        </div>
+                                        <button onClick={addCustomParam} disabled={!customParamForm.label.trim()}
+                                            className="w-full py-2 text-[10px] font-black rounded-xl bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-40 transition-all">
+                                            + Add Parameter
+                                        </button>
+                                    </div>
+                                )}
+                                {customParams.length >= 3 && <p className="text-[9px] text-slate-400 text-center">Max 3 custom parameters reached</p>}
+                            </div>
+                        )}
+                    </div>
+
 
                     {/* AI Strategy Insights */}
                     <div className="flex flex-col shrink-0 mb-4">
@@ -1616,34 +1928,60 @@ const App: React.FC = () => {
                 </div>
             </div>
 
-            {/* RIGHT SIDEBAR / CHAT UI */}
-            {/* The ChatInterface component will be refactored to take full height of its container next */}
-            <div className={`absolute right-4 top-24 bottom-4 w-[360px] max-w-[90vw] z-20 transition-transform duration-500 ease-in-out pointer-events-none ${chatOpen ? 'translate-x-0' : 'translate-x-[120%]'}`}>
+            {/* RIGHT SIDEBAR / CHAT UI - Truly floating, doesn't affect layout */}
+            <div className={`fixed right-4 top-24 bottom-4 w-[360px] max-w-[90vw] z-50 transition-transform duration-300 ease-out pointer-events-none ${chatOpen ? 'translate-x-0' : 'translate-x-[calc(100%+32px)]'}`}>
                 <div className="w-full h-full pointer-events-auto flex flex-col">
                     <ChatInterface
                         messages={conversationMessages}
                         onSendMessage={handleUserMessage}
                         onClearChat={handleClearChat}
                         isAITyping={isAITyping}
-                        isOpen={true} // Force true inside its own container, toggle via the container itself
+                        isOpen={chatOpen}
                         onToggle={() => setChatOpen(!chatOpen)}
                         selectedWard={selectedWard || undefined}
                     />
                 </div>
             </div>
 
-            {/* Floating Chat Toggle Button (when left sidebar is closed) */}
+            {/* Floating Chat Toggle Button (always visible when chat is closed) */}
             {!chatOpen && (
                 <button
                     onClick={() => setChatOpen(true)}
-                    className="absolute right-4 bottom-4 z-20 bg-indigo-600 text-white p-4 rounded-full shadow-2xl hover:bg-indigo-700 hover:scale-110 transition-all border border-indigo-400 flex items-center justify-center group"
+                    className="fixed right-4 bottom-4 z-40 bg-indigo-600 text-white p-4 rounded-full shadow-2xl hover:bg-indigo-700 hover:scale-110 transition-all border border-indigo-400 flex items-center justify-center group"
+                    title="Open AI Chat"
                 >
                     <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
-                    <span className="absolute right-14 opacity-0 group-hover:opacity-100 bg-black/80 text-white text-[10px] font-bold px-2 py-1 rounded whitespace-nowrap transition-opacity">Open AI Chat</span>
+                    <span className="absolute right-14 opacity-0 group-hover:opacity-100 bg-black/80 text-white text-[10px] font-bold px-2 py-1 rounded whitespace-nowrap transition-opacity pointer-events-none">Open AI Chat</span>
                 </button>
             )}
+
+            {/* MOBILE BOTTOM NAVIGATION */}
+            <div className="lg:hidden fixed bottom-0 left-0 right-0 z-[200] bg-white/90 backdrop-blur-xl border-t border-slate-200 p-2 pb-6 flex items-center justify-around shadow-[0_-10px_30px_rgba(0,0,0,0.1)]">
+                <button
+                    onClick={() => setMobileView('map')}
+                    className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all ${mobileView === 'map' ? 'text-indigo-600 bg-indigo-50 scale-105' : 'text-slate-400'}`}
+                >
+                    <span className="text-xl">🗺️</span>
+                    <span className="text-[9px] font-black uppercase tracking-widest">Map</span>
+                </button>
+                <button
+                    onClick={() => { setMobileView('analytics'); setSheetState('half'); }}
+                    className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all ${mobileView === 'analytics' ? 'text-indigo-600 bg-indigo-50 scale-105' : 'text-slate-400'}`}
+                >
+                    <span className="text-xl">📊</span>
+                    <span className="text-[9px] font-black uppercase tracking-widest">Intelligence</span>
+                </button>
+                <button
+                    onClick={() => setMobileView('chat')}
+                    className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all ${mobileView === 'chat' ? 'text-indigo-600 bg-indigo-50 scale-105' : 'text-slate-400'}`}
+                >
+                    <span className="text-xl">💬</span>
+                    <span className="text-[9px] font-black uppercase tracking-widest">AI Chat</span>
+                </button>
+            </div>
         </div>
     );
 };
 
 export default App;
+

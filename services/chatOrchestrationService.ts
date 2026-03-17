@@ -26,6 +26,9 @@ import {
 import { DOMAIN_CONFIG, DomainId } from '../domains';
 import { calculateDomainScores } from './scoringEngine';
 import { ScoringMatrix } from '../types';
+import { GEMINI_PROXY_URL, USE_DIRECT_API } from './apiConfig';
+
+const DIRECT_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.VITE_API_KEY || '';
 
 // ============================================
 // Types & Interfaces
@@ -91,16 +94,13 @@ export async function processUserQuery(
     context: ChatContext
 ): Promise<ChatResponse> {
 
-    const apiKey = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.VITE_API_KEY || '';
-    if (!apiKey) {
+    if (USE_DIRECT_API && !DIRECT_API_KEY) {
         return {
             text: "⚠️ Gemini API key not configured. Please add VITE_GEMINI_API_KEY to .env.local",
             usedPlacesAPI: false,
             usedGemini: false
         };
     }
-
-    const ai = new GoogleGenAI({ apiKey });
 
     // ============================================
     // Step 1: Build agentic system prompt
@@ -116,16 +116,26 @@ export async function processUserQuery(
         // Step 2: First Gemini call - detect intent
         // ============================================
 
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: fullPrompt,
-            config: {
-                temperature: 0.2,
-                maxOutputTokens: 800
-            }
-        });
+        let geminiText = '';
+        
+        if (USE_DIRECT_API) {
+            const ai = new GoogleGenAI({ apiKey: DIRECT_API_KEY });
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: fullPrompt,
+                config: { temperature: 0.3, maxOutputTokens: 1500 }
+            });
+            geminiText = response.text || '';
+        } else {
+            const resp = await fetch(GEMINI_PROXY_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages: [{ role: 'user', content: fullPrompt }] }),
+            });
+            const data = await resp.json();
+            geminiText = data.text || '';
+        }
 
-        const geminiText = response.text || '';
         console.log('💬 Gemini response:', geminiText.substring(0, 200) + '...');
 
         // ============================================
@@ -139,6 +149,42 @@ export async function processUserQuery(
 
             // ============================================
             // Step 4: Fetch Places API data (domain-aware)
+            // Step 3.5: Resolve coordinates — geocode query to get the RIGHT location
+            // ============================================
+
+            // PROBLEM: When a cluster is selected, Gemini gets the cluster coordinates in
+            // context and "helpfully" puts those coords in its JSON, even when the user
+            // asked about a completely different place (e.g. "Indiranagar").
+            // SOLUTION: When a query string is present (e.g. "Indiranagar"), ALWAYS geocode
+            // it. If the geocoded result differs from the context location by more than ~1km,
+            // it means the user is asking about a NEW place — use the geocoded coords.
+            if (toolRequest.params.query) {
+                const geocoded = await geocodeQuery(toolRequest.params.query);
+                if (geocoded) {
+                    const ctxLat = context.currentLocation?.[0];
+                    const ctxLng = context.currentLocation?.[1];
+                    const isSameAsCluster = ctxLat !== undefined && ctxLng !== undefined &&
+                        Math.abs(geocoded[0] - ctxLat) < 0.01 &&  // ~1.1 km
+                        Math.abs(geocoded[1] - ctxLng) < 0.01;
+
+                    if (!isSameAsCluster) {
+                        // Geocoded place is different from the selected cluster → use it
+                        console.log(`🌍 Geocoded "${toolRequest.params.query}" → [${geocoded[0]}, ${geocoded[1]}] (overriding context/Gemini coords)`);
+                        toolRequest.params.lat = geocoded[0];
+                        toolRequest.params.lng = geocoded[1];
+                    } else if (!toolRequest.params.lat || !toolRequest.params.lng) {
+                        // Geocode returned same location but Gemini omitted coords — still fill them in
+                        toolRequest.params.lat = geocoded[0];
+                        toolRequest.params.lng = geocoded[1];
+                    }
+                } else if (!toolRequest.params.lat || !toolRequest.params.lng) {
+                    // Geocoding failed and Gemini didn't provide coords — log the issue
+                    console.warn(`⚠️ Geocoding failed for "${toolRequest.params.query}" and Gemini provided no coords`);
+                }
+            }
+
+            // ============================================
+            // Step 4: Fetch Places API data
             // ============================================
 
             const placesData = await fetchPlacesData(toolRequest, context);
@@ -149,7 +195,7 @@ export async function processUserQuery(
 
             const activeDomain = (context.domain || 'gym') as DomainId;
             const formattedResults = formatPlacesResults(placesData, toolRequest.action, activeDomain);
-            const mapAction = createMapAction(toolRequest, placesData);
+            const mapAction = createMapAction(toolRequest, placesData, context);
 
             // ============================================
             // Step 6: Second Gemini call with data context
@@ -171,18 +217,25 @@ Use the domain context (${domainCfg.label}) throughout — do NOT refer to gyms 
 Be concise, highlight the key numbers, and seamlessly weave in the provided tactical recommendation.
 Respond ONLY in natural language — no JSON, no code blocks.`;
 
-            const finalResponse = await ai.models.generateContent({
-                model: 'gemini-2.5-flash',
-                contents: contextualPrompt,
-                config: {
-                    temperature: 0.4,
-                    maxOutputTokens: 2048
-                }
-            });
-
-            const rawFinalText = finalResponse.text || 'Analysis complete.';
-            // Strip any residual JSON blocks from the final narrative response
-            const finalText = stripJsonBlocks(rawFinalText);
+            let finalText = '';
+            
+            if (USE_DIRECT_API) {
+                const ai = new GoogleGenAI({ apiKey: DIRECT_API_KEY });
+                const finalResponse = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash',
+                    contents: contextualPrompt,
+                    config: { temperature: 0.4, maxOutputTokens: 2048 }
+                });
+                finalText = stripJsonBlocks(finalResponse.text || 'Analysis complete.');
+            } else {
+                const resp = await fetch(GEMINI_PROXY_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ messages: [{ role: 'user', content: contextualPrompt }] }),
+                });
+                const data = await resp.json();
+                finalText = stripJsonBlocks(data.text || 'Analysis complete.');
+            }
 
             // Determine if placesData is a LocationIntelligence object (analyze/get_intelligence)
             const isLocationIntel =
@@ -258,6 +311,31 @@ function stripJsonBlocks(text: string): string {
 /**
  * Build system prompt explaining Places API capabilities.
  * Fully domain-aware — all examples use the active domain label.
+ * Geocode a place name to coordinates using Nominatim.
+ * Returns [lat, lng] or null if not found.
+ */
+async function geocodeQuery(query: string): Promise<[number, number] | null> {
+    try {
+        const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query + ', Bangalore')}`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        if (data && data.length > 0) {
+            return [parseFloat(data[0].lat), parseFloat(data[0].lon)];
+        }
+        // Try without "Bangalore" suffix as fallback
+        const resp2 = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`);
+        const data2 = await resp2.json();
+        if (data2 && data2.length > 0) {
+            return [parseFloat(data2[0].lat), parseFloat(data2[0].lon)];
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Build system prompt explaining Places API capabilities
  */
 function buildAgenticSystemPrompt(context: ChatContext): string {
     const activeDomain = (context.domain || 'gym') as DomainId;
@@ -304,6 +382,10 @@ Places API tool call format:
 - General questions (greetings, clarifications)
 - Questions about current visible data
 - Simple conversations
+
+**CRITICAL:** If you decide to call the Places API, respond with ONLY the JSON block above. Do not add any extra text before or after the JSON — this will cause a parsing error.
+
+**IMPORTANT - Coordinates:** Always provide accurate lat/lng for named locations (e.g. HSR Layout = 12.9116, 77.6389; Koramangala = 12.9352, 77.6245; Whitefield = 12.9698, 77.7500; Hebbal = 13.0352, 77.5970; Indiranagar = 12.9784, 77.6408; Jayanagar = 12.9308, 77.5838; Marathahalli = 12.9591, 77.6972). If unsure of exact coords, include the area name in the "query" field and omit lat/lng.
 
 `;
 
@@ -468,8 +550,7 @@ function formatPlacesResults(
             formatted += `- Competition Level: ${intel.competitionLevel}\n`;
             formatted += `- Market Opportunity: ${intel.marketGap}\n\n`;
 
-            const scores = calculateDomainScores(intel, domain, searchRadius);
-            const recommendation = generateDomainRecommendation(intel, domain, scores);
+            const recommendation = generateDomainRecommendation(intel, domain);
             formatted += `**Strategic Recommendation:**\n${recommendation}\n`;
         }
 
@@ -494,12 +575,18 @@ function formatPlacesResults(
  */
 function createMapAction(
     request: PlacesDataRequest,
-    placesData: any
+    placesData: any,
+    context: ChatContext
 ): MapAction | undefined {
 
     const { action, params } = request;
-    const lat = params.lat;
-    const lng = params.lng;
+
+    // Prefer Gemini/geocoded coords. Only fall back to context.currentLocation when
+    // there is no query (i.e. the user is explicitly asking about the currently selected
+    // spot). When a query IS present, the geocoding step above has already resolved
+    // the correct lat/lng — do NOT fall back to the cluster coords.
+    const lat = params.lat ?? (params.query ? undefined : context.currentLocation?.[0]);
+    const lng = params.lng ?? (params.query ? undefined : context.currentLocation?.[1]);
 
     if (!lat || !lng) return undefined;
 
