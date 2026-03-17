@@ -21,6 +21,7 @@ import {
     deduplicatedFetch,
     AggregatedIntel,
 } from './placesCache';
+import { CalculatedScores } from './scoringEngine';
 
 const GOOGLE_PLACES_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 
@@ -715,9 +716,12 @@ export async function getDomainIntelligence(
 
 export function generateDomainRecommendation(
     intel: DomainLocationIntelligence,
-    domainId: string
+    domainId: string,
+    scores?: CalculatedScores
 ): string {
-    const { competitors, corporateOffices, apartments, infraSynergy, transitStations, marketGap, competitionLevel } = intel;
+    const { competitors, corporateOffices, apartments, infraSynergy, transitStations, marketGap } = intel;
+    const gap = scores?.competitorRatio ?? 0;
+    const demand = scores?.demographicLoad ?? 0;
 
     // ── Domain-Specific Demand Driver Labels ────────────────────────────────
     const demandConfig: Record<string, { drivers: { label: string; value: string }[]; primaryFootfall: string }> = {
@@ -787,16 +791,26 @@ export function generateDomainRecommendation(
 
     // ── Strategic Recommendation ────────────────────────────────────────────
     rec += `STRATEGIC RECOMMENDATION\n\n`;
-    if (marketGap === 'UNTAPPED') {
-        rec += `🎯 FIRST-MOVER ADVANTAGE — No ${competitorLabel} detected!\n`;
+    
+    if (scores && gap >= 75) {
+        rec += `🎯 GOLD MINE — Gap Index ${gap}/100. Strong demand, low competition.\n`;
+        rec += `- Demand score ${demand}/100 backed by ${apartments.total} complexes + ${infraSynergy.total} synergy spots\n`;
+        rec += competitors.total === 0
+            ? `- No direct competitors detected — first-mover advantage\n`
+            : `- Only ${competitors.total} competitor(s) serving this demand pool\n`;
+    } else if (marketGap === 'UNTAPPED' || (scores && gap >= 60)) {
+        rec += `🎯 FIRST-MOVER ADVANTAGE — Low ${competitorLabel} density detected!\n`;
+        if (scores) rec += `- Gap Index: ${gap}/100 | Demand Score: ${demand}/100\n`;
         rec += `- Primary demand: ${domainCfg.primaryFootfall}\n`;
         rec += `- Establish brand presence aggressively\n`;
-    } else if (marketGap === 'OPPORTUNITY') {
+    } else if (marketGap === 'OPPORTUNITY' || (scores && gap >= 40)) {
         rec += `🟢 HIGH POTENTIAL — Strong demand-to-supply ratio.\n`;
+        if (scores) rec += `- Gap Index: ${gap}/100 reflects underserved market\n`;
         rec += `- Primary demand: ${domainCfg.primaryFootfall}\n`;
         rec += `- Differentiated positioning recommended\n`;
     } else if (marketGap === 'COMPETITIVE') {
         rec += `🟡 DIFFERENTIATION REQUIRED — Moderate competition.\n`;
+        if (scores) rec += `- Gap Index: ${gap}/100 | Area is reaching maturity\n`;
         rec += `- ${competitors.total} existing ${competitorLabel} in this radius\n`;
         rec += `- Niche strategy or unique offering needed\n`;
     } else {
