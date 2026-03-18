@@ -173,7 +173,11 @@ const MapZoomController = ({ center, zoom }: { center: [number, number] | null, 
     const map = useMap();
     useEffect(() => {
         if (center) {
-            map.setView(center, zoom, { animate: true, duration: 0.8 });
+            map.closePopup();
+            map.stop(); // Stop any ongoing flyTo/setView animation
+            requestAnimationFrame(() => {
+                map.setView(center, zoom, { animate: true, duration: 1.5 });
+            });
         } else {
             // Reset to Bangalore center if no selection
             map.setView([BANGALORE_CENTER.lat, BANGALORE_CENTER.lng], zoom, { animate: true, duration: 0.5 });
@@ -386,7 +390,13 @@ const App: React.FC = () => {
 
     const addCustomParam = () => {
         if (customParams.length >= 3 || !customParamForm.label.trim()) return;
-        const color = CUSTOM_COLORS[customParams.length % CUSTOM_COLORS.length];
+        
+        // Find first unused color
+        const usedColors = customParams.map(p => p.color);
+        const availableColor = CUSTOM_COLORS.find(c => !usedColors.includes(c));
+        // Fallback to random if all are somehow used
+        const color = availableColor || CUSTOM_COLORS[Math.floor(Math.random() * CUSTOM_COLORS.length)];
+        
         const newParam: CustomParam = {
             id: Math.random().toString(36).slice(2),
             label: customParamForm.label.trim(),
@@ -485,118 +495,19 @@ const App: React.FC = () => {
             return;
         }
 
-        // Detect if the user input is a freeform question (natural language QA)
-        const isQuestion = /\?|^what\b|^where\b|^how\b|^is\b|^are\b|^who\b|^when\b|^which\b|^tell\b|^show\b/i.test(query.trim());
+        // ============================================
+        // AI-FIRST SEARCH ROUTING
+        // All searches (places, wards, questions) are now
+        // routed through the AI chat orchestration service.
+        // ============================================
+        console.log("🗣️ Routing query to AI Chat:", query);
+        setChatOpen(true);
+        setSearchQuery('');       // Clear the input
+        setSearchSuggestions([]); // Close autocomplete
+        handleUserMessage(query); // Send to Agentic flow
 
-        if (isQuestion) {
-            console.log("🗣️ Conversational query detected, routing to chat:", query);
-            setChatOpen(true);
-            setSearchQuery('');
-            handleUserMessage(query);
-            return;
-        }
-
-        // ── Domain Intent Detection ──────────────────────────────────────────
-        const intent = parseSearchIntent(query);
-        let effectiveQuery = query;
-
-        if (intent.hasDomain && intent.domain) {
-            console.log(`🎯 Domain detected: "${intent.domain}" | Location: "${intent.locationQuery}"`);
-            setActiveDomain(intent.domain);
-            effectiveQuery = intent.locationQuery || query;
-        }
-
-        try {
-            // 1. Try internal ward/cluster search first (using cleaned location query)
-            const results = executeSearch(effectiveQuery, wardClusters, wardScores);
-
-            if (results.length > 0) {
-                const description = getQueryDescription(effectiveQuery);
-                const domainNote = intent.hasDomain
-                    ? ` (switched to ${intent.domain} analysis)`
-                    : '';
-
-                console.log(`🔍 Query: "${query}"`);
-                console.log(`📊 Found ${results.length} results`);
-
-                setSearchResults(results);
-                setQueryDescription(description + domainNote);
-
-                // If single result, zoom to it automatically
-                if (results.length === 1) {
-                    const ward = results[0];
-                    setSelectedPos([ward.lat, ward.lng]);
-                    setSelectedCluster(ward.id);
-                    setSelectedWard(null);
-                    setMapZoom(14);
-                }
-                return;
-            }
-
-            // 2. Fallback: External Place Search (Nominatim) -> then Google Places textSearch
-            //    Use the cleaned location query so Nominatim doesn't get confused by domain words
-            const geoQuery = intent.hasDomain && intent.locationQuery
-                ? intent.locationQuery
-                : query;
-
-            setQueryDescription(
-                intent.hasDomain
-                    ? `Switching to ${intent.domain} mode · Searching "${geoQuery}"...`
-                    : `Searching map for "${geoQuery}"...`
-            );
-            console.log(`🌍 Searching external map for: ${geoQuery}`);
-
-            const response = await fetch(
-                `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(geoQuery + ", Bangalore")}`
-            );
-            const data = await response.json();
-
-            if (data && data.length > 0) {
-                const place = data[0];
-                const lat = parseFloat(place.lat);
-                const lng = parseFloat(place.lon);
-
-                console.log(`📍 Found external place: ${place.display_name}`);
-
-                setSearchResults([]);
-                setSelectedPos([lat, lng]);
-                setSelectedCluster(null);
-                setSelectedWard(null);
-                setMapZoom(14);
-
-                const placeName = place.display_name.split(',')[0];
-                setQueryDescription(
-                    intent.hasDomain
-                        ? `📍 ${placeName} · ${intent.domain} mode active`
-                        : `Found: ${placeName}`
-                );
-            } else {
-                // If Nominatim fails, try Google Places Text Search for richer data
-                console.log('🔎 Nominatim returned no results; trying Google Places Text Search');
-                const places = await textSearch(geoQuery);
-
-                if (places && places.length > 0) {
-                    setSearchResults(places);
-                    setQueryDescription(
-                        `Found ${places.length} place(s) from Google Places for "${geoQuery}"` +
-                        (intent.hasDomain ? ` · ${intent.domain} mode active` : '')
-                    );
-                    const first = places[0];
-                    if (first.location && first.location.lat && first.location.lng) {
-                        setSelectedPos([first.location.lat, first.location.lng]);
-                        setMapZoom(14);
-                    }
-                } else {
-                    setQueryDescription(`No results found for "${geoQuery}"`);
-                    alert(`Location "${geoQuery}" not found.`);
-                }
-            }
-
-        } catch (error) {
-            console.error('❌ Search error:', error);
-            setQueryDescription('Search failed. Please try again.');
-        }
-    }, [wardClusters, wardScores]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // VOICE: Toggle search bar microphone (placed after handlePlaceSearch to avoid forward-reference)
     const toggleSearchListening = useCallback(() => {
@@ -962,10 +873,16 @@ const App: React.FC = () => {
             }));
 
             // Call orchestration service (Gemini + Places API coordination)
+            // Fix 3: pass selectedCluster name as ward context so Gemini
+            // knows which area is currently pinned even when no ward is selected.
+            const clusterContext = selectedWard ||
+                (selectedCluster
+                    ? wardClusters.find((w: any) => w.id === selectedCluster)?.wardName
+                    : undefined);
             const response = await processUserQuery(message, {
                 recentMessages: recentContext,
                 currentLocation: selectedPos || undefined,
-                selectedWard: selectedWard || undefined,
+                selectedWard: clusterContext,
                 domain: detectedDomain,
                 radius: searchRadius,
                 scores: scores || undefined,
@@ -988,7 +905,10 @@ const App: React.FC = () => {
                     case 'analyze':
                     case 'navigate':
                         if (action.payload.location) {
-                            setSelectedPos(action.payload.location);
+                            // Fix 3: always update pos + zoom, even if coords haven't changed,
+                            // so the map visibly navigates and analysis always re-runs.
+                            const newLoc = action.payload.location;
+                            setSelectedPos(newLoc);
                             setMapZoom(action.payload.zoom || 14);
 
                             if (action.payload.wardName) {
@@ -997,12 +917,9 @@ const App: React.FC = () => {
 
                             if (action.payload.triggerAnalysis) {
                                 if (response.prefetchedIntel) {
-                                    // ✅ Chat already fetched intel — apply directly, skip re-fetch (zero extra API calls)
+                                    // ✅ Chat already fetched intel — apply directly, skip re-fetch
                                     console.log('♻️ Using prefetchedIntel — skipping performAnalysis()');
                                     const intel = response.prefetchedIntel;
-
-                                    // Detect shape: LocationIntelligence (gym) has `gyms`,
-                                    //               DomainLocationIntelligence (other) has `competitors`
                                     const isGymShape = 'gyms' in intel;
 
                                     setRealPOIs({
@@ -1017,15 +934,14 @@ const App: React.FC = () => {
                                     const cachedScores = calculateDomainScores(intel, detectedDomain as DomainId, searchRadius);
                                     setScores(cachedScores);
 
-                                    // Call the correct recommendation function based on data shape
                                     if (isGymShape) {
                                         setAiInsight(generateDataDrivenRecommendation(intel, cachedScores));
                                     } else {
                                         setAiInsight(generateDomainRecommendation(intel, detectedDomain));
                                     }
                                 } else {
-                                    // Fallback: trigger fresh analysis with the detected domain
-                                    console.log('🔍 Triggering performAnalysis() — no prefetchedIntel, domain:', detectedDomain);
+                                    // Fix 3: force re-analysis even if location reference is the same object
+                                    console.log('🔍 Triggering performAnalysis() — domain:', detectedDomain);
                                     setTimeout(() => { performAnalysis(detectedDomain); }, 300);
                                 }
                             }
