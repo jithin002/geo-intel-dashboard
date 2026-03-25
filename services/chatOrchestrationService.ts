@@ -28,6 +28,9 @@ import {
 import { DOMAIN_CONFIG, DomainId } from '../domains';
 import { calculateDomainScores } from './scoringEngine';
 import { ScoringMatrix } from '../types';
+import { GEMINI_PROXY_URL, USE_DIRECT_API } from './apiConfig';
+
+const DIRECT_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.VITE_API_KEY || '';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types & Interfaces
@@ -193,8 +196,7 @@ export async function processUserQuery(
     context: ChatContext
 ): Promise<ChatResponse> {
 
-    const apiKey = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.VITE_API_KEY || '';
-    if (!apiKey) {
+    if (USE_DIRECT_API && !DIRECT_API_KEY) {
         return {
             text: "⚠️ Gemini API key not configured. Please add VITE_GEMINI_API_KEY to .env.local",
             usedPlacesAPI: false,
@@ -211,25 +213,35 @@ export async function processUserQuery(
     // ── Fix 4: Detect compare intent before calling Gemini ─────────────────
     const compareIntent = detectCompareIntent(userMessage);
     if (compareIntent.isCompare && compareIntent.locations.length === 2) {
-        return handleCompareQuery(userMessage, compareIntent.locations, context, apiKey);
+        return handleCompareQuery(userMessage, compareIntent.locations, context);
     }
 
-    const ai = new GoogleGenAI({ apiKey });
     const systemPrompt = buildAgenticSystemPrompt(context);
     const fullPrompt = `${systemPrompt}\n\nUser: ${userMessage}`;
 
     console.log('🤖 Sending query to Gemini (agentic mode)...');
 
     try {
-        // ── Step 1: Intent detection call (low token budget) ──────────────
+        // ── Step 1: Intent detection call ─────────────────────────────────
         let geminiText = '';
         try {
-            const response = await ai.models.generateContent({
-                model: 'gemini-2.5-flash',
-                contents: fullPrompt,
-                config: { temperature: 0.2, maxOutputTokens: 400 }   // Fix 1: cap at 400
-            });
-            geminiText = response.text || '';
+            if (USE_DIRECT_API) {
+                const ai = new GoogleGenAI({ apiKey: DIRECT_API_KEY });
+                const response = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash',
+                    contents: fullPrompt,
+                    config: { temperature: 0.2, maxOutputTokens: 400 }  // Fix 1: cap at 400
+                });
+                geminiText = response.text || '';
+            } else {
+                const resp = await fetch(GEMINI_PROXY_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ messages: [{ role: 'user', content: fullPrompt }] }),
+                });
+                const data = await resp.json();
+                geminiText = data.text || '';
+            }
         } catch (intentErr) {
             console.error('❌ Gemini intent call failed:', intentErr);
             return {
@@ -251,12 +263,25 @@ export async function processUserQuery(
             if (looksLikeJson) {
                 console.warn('⚠️ Suspected broken JSON from Gemini — retrying with prose-only instruction');
                 try {
-                    const retryResponse = await ai.models.generateContent({
-                        model: 'gemini-2.5-flash',
-                        contents: `${systemPrompt}\n\nUser: ${userMessage}\n\nIMPORTANT: Respond ONLY in natural language — no JSON, no code blocks.`,
-                        config: { temperature: 0.4, maxOutputTokens: 800 }
-                    });
-                    const retryText = retryResponse.text || '';
+                    const retryPrompt = `${systemPrompt}\n\nUser: ${userMessage}\n\nIMPORTANT: Respond ONLY in natural language — no JSON, no code blocks.`;
+                    let retryText = '';
+                    if (USE_DIRECT_API) {
+                        const ai = new GoogleGenAI({ apiKey: DIRECT_API_KEY });
+                        const retryResponse = await ai.models.generateContent({
+                            model: 'gemini-2.5-flash',
+                            contents: retryPrompt,
+                            config: { temperature: 0.4, maxOutputTokens: 800 }
+                        });
+                        retryText = retryResponse.text || '';
+                    } else {
+                        const resp = await fetch(GEMINI_PROXY_URL, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ messages: [{ role: 'user', content: retryPrompt }] }),
+                        });
+                        const data = await resp.json();
+                        retryText = data.text || '';
+                    }
                     return {
                         text: stripJsonBlocks(retryText) || 'I can help you analyse locations in Bangalore. Could you clarify what you need?',
                         usedPlacesAPI: false,
@@ -272,10 +297,14 @@ export async function processUserQuery(
             console.log('🔧 Gemini requested Places API data:', toolRequest.action);
 
             // ── Fix 2: Geocode named places before fetching ────────────────
+            // PROBLEM: When a cluster is selected, Gemini may "helpfully" copy those coords
+            // into its JSON even when the user is asking about a different place.
+            // SOLUTION: When a query string is present, ALWAYS geocode it and use the result
+            // when it differs from the context location by more than ~1km.
             if (toolRequest.params.query) {
                 const geocoded = await geocodeQuery(toolRequest.params.query);
                 if (geocoded) {
-                    // Check if geocoded location is within Bangalore bounds
+                    // Fix 2a: Bangalore bounds check
                     if (!isInsideBangalore(geocoded[0], geocoded[1])) {
                         return {
                             text: "I found that location, but it appears to be outside Bangalore. I am strictly focused on analyzing business opportunities within Bangalore city limits. Please try a location within Bangalore.",
@@ -286,21 +315,22 @@ export async function processUserQuery(
 
                     const ctxLat = context.currentLocation?.[0];
                     const ctxLng = context.currentLocation?.[1];
-                    // Only override if geocoded place is > ~1km from current context location
-                    const isSameSpot = ctxLat !== undefined && ctxLng !== undefined &&
-                        Math.abs(geocoded[0] - ctxLat) < 0.01 &&
+                    const isSameAsCluster = ctxLat !== undefined && ctxLng !== undefined &&
+                        Math.abs(geocoded[0] - ctxLat) < 0.01 &&  // ~1.1 km
                         Math.abs(geocoded[1] - ctxLng) < 0.01;
 
-                    if (!isSameSpot) {
-                        console.log(`🌍 Geocoded "${toolRequest.params.query}" → [${geocoded[0]}, ${geocoded[1]}]`);
+                    if (!isSameAsCluster) {
+                        // Geocoded place is different from the selected cluster → use it
+                        console.log(`🌍 Geocoded "${toolRequest.params.query}" → [${geocoded[0]}, ${geocoded[1]}] (overriding context/Gemini coords)`);
                         toolRequest.params.lat = geocoded[0];
                         toolRequest.params.lng = geocoded[1];
                     } else if (!toolRequest.params.lat || !toolRequest.params.lng) {
+                        // Geocode returned same location but Gemini omitted coords — still fill them in
                         toolRequest.params.lat = geocoded[0];
                         toolRequest.params.lng = geocoded[1];
                     }
-                } else {
-                    console.warn(`⚠️ Nominatim found nothing for "${toolRequest.params.query}"`);
+                } else if (!toolRequest.params.lat || !toolRequest.params.lng) {
+                    console.warn(`⚠️ Geocoding failed for "${toolRequest.params.query}" and Gemini provided no coords`);
                 }
             }
 
@@ -310,7 +340,8 @@ export async function processUserQuery(
             // ── Step 4: Format + map action ────────────────────────────────
             const activeDomain = (context.domain || 'gym') as DomainId;
             const formattedResults = formatPlacesResults(placesData, toolRequest.action, activeDomain);
-            const mapAction = createMapAction(toolRequest, context);
+            const mapAction = createMapAction(toolRequest, placesData, context);
+
 
             // ── Step 5: Synthesiser Gemini call ────────────────────────────
             const domainCfg = DOMAIN_CONFIG[activeDomain] || DOMAIN_CONFIG['gym'];
@@ -330,17 +361,29 @@ Respond ONLY in natural language — no JSON, no code blocks.`;
 
             let finalText = '';
             try {
-                const finalResponse = await ai.models.generateContent({
-                    model: 'gemini-2.5-flash',
-                    contents: contextualPrompt,
-                    config: { temperature: 0.4, maxOutputTokens: 3000 }  // Fix 4: 3000 for rich answers
-                });
-                finalText = stripJsonBlocks(finalResponse.text || 'Analysis complete.');
+                if (USE_DIRECT_API) {
+                    const ai = new GoogleGenAI({ apiKey: DIRECT_API_KEY });
+                    const finalResponse = await ai.models.generateContent({
+                        model: 'gemini-2.5-flash',
+                        contents: contextualPrompt,
+                        config: { temperature: 0.4, maxOutputTokens: 3000 }  // 3000 for rich answers
+                    });
+                    finalText = stripJsonBlocks(finalResponse.text || 'Analysis complete.');
+                } else {
+                    const resp = await fetch(GEMINI_PROXY_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ messages: [{ role: 'user', content: contextualPrompt }] }),
+                    });
+                    const data = await resp.json();
+                    finalText = stripJsonBlocks(data.text || 'Analysis complete.');
+                }
             } catch (synthErr) {
                 console.error('❌ Gemini synthesiser call failed:', synthErr);
                 finalText = 'I gathered the location data but had trouble generating the summary. Please try again.';
             }
 
+            // Determine if placesData is a LocationIntelligence object (analyze/get_intelligence)
             const isLocationIntel =
                 toolRequest.action === 'analyze_location' ||
                 toolRequest.action === 'get_intelligence';
@@ -398,8 +441,7 @@ Respond ONLY in natural language — no JSON, no code blocks.`;
 async function handleCompareQuery(
     userMessage: string,
     locations: string[],
-    context: ChatContext,
-    apiKey: string
+    context: ChatContext
 ): Promise<ChatResponse> {
     console.log(`⚖️ Compare query detected: "${locations[0]}" vs "${locations[1]}"`);
 
@@ -443,7 +485,6 @@ async function handleCompareQuery(
             formatPlacesResults(intel, 'get_intelligence', activeDomain, label, score);
 
         const systemPrompt = buildAgenticSystemPrompt(context);
-        const ai = new GoogleGenAI({ apiKey });
 
         const comparePrompt = `${systemPrompt}
 
@@ -465,13 +506,24 @@ Compare both areas for a **${domainCfg.label}** opportunity. Present a side-by-s
 - Final recommendation: which area is the better bet and why
 Respond in natural language with a clear recommendation. No JSON. Be concise but data-driven.`;
 
-        const finalResponse = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: comparePrompt,
-            config: { temperature: 0.4, maxOutputTokens: 3000 }
-        });
-
-        const finalText = stripJsonBlocks(finalResponse.text || 'Comparison complete.');
+        let finalText = '';
+        if (USE_DIRECT_API) {
+            const ai = new GoogleGenAI({ apiKey: DIRECT_API_KEY });
+            const finalResponse = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: comparePrompt,
+                config: { temperature: 0.4, maxOutputTokens: 3000 }
+            });
+            finalText = stripJsonBlocks(finalResponse.text || 'Comparison complete.');
+        } else {
+            const resp = await fetch(GEMINI_PROXY_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages: [{ role: 'user', content: comparePrompt }] }),
+            });
+            const data = await resp.json();
+            finalText = stripJsonBlocks(data.text || 'Comparison complete.');
+        }
 
         // Navigate map to the winning location (higher score)
         const winnerGeo = score1.total >= score2.total ? geo1 : geo2;
@@ -505,6 +557,7 @@ Respond in natural language with a clear recommendation. No JSON. Be concise but
 // ─────────────────────────────────────────────────────────────────────────────
 // System prompt builder
 // ─────────────────────────────────────────────────────────────────────────────
+
 
 function buildAgenticSystemPrompt(context: ChatContext): string {
     const activeDomain = (context.domain || 'gym') as DomainId;
@@ -569,6 +622,12 @@ When to use Places API:
 When NOT to use Places API:
 - Greetings, general clarifications, simple follow-up questions
 - Questions about currently visible data
+
+**CRITICAL:** If you decide to call the Places API, respond with ONLY the JSON block above. Do not add any extra text before or after the JSON — this will cause a parsing error.
+
+**IMPORTANT - Coordinates:** Always provide accurate lat/lng for named locations (e.g. HSR Layout = 12.9116, 77.6389; Koramangala = 12.9352, 77.6245; Whitefield = 12.9698, 77.7500; Hebbal = 13.0352, 77.5970; Indiranagar = 12.9784, 77.6408; Jayanagar = 12.9308, 77.5838; Marathahalli = 12.9591, 77.6972). If unsure of exact coords, include the area name in the "query" field and omit lat/lng.
+
+
 `;
 
     // ── Fix 3: Include cluster context so Gemini uses the right coords ─────
@@ -764,13 +823,16 @@ function formatPlacesResults(
 
 function createMapAction(
     request: PlacesDataRequest,
+    placesData: any,
     context: ChatContext
 ): MapAction | undefined {
     const { params } = request;
 
     // Fix 3: When a query is present, the geocoder has already overridden lat/lng above.
-    // Do NOT fall back to context.currentLocation when a query name was given — that
-    // would navigate to the cluster instead of the geocoded place.
+    // Prefer Gemini/geocoded coords. Only fall back to context.currentLocation when
+    // there is no query (i.e. the user is explicitly asking about the currently selected
+    // spot). When a query IS present, the geocoding step above has already resolved
+    // the correct lat/lng — do NOT fall back to the cluster coords.
     const lat = params.lat ?? (params.query ? undefined : context.currentLocation?.[0]);
     const lng = params.lng ?? (params.query ? undefined : context.currentLocation?.[1]);
 

@@ -1,0 +1,13 @@
+{
+  "name": "places-api-proxy",
+  "version": "1.0.0",
+  "description": "Secure proxy for Google Places API calls",
+  "main": "index.js",
+  "dependencies": {
+    "@google-cloud/functions-framework": "^3.5.0",
+    "node-fetch": "^2.6.7"
+  },
+  "engines": {
+    "node": "18"
+  }
+}

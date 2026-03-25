@@ -1,0 +1,26 @@
+﻿f07a9c9c5556a1a2a2f23775393d6d238f91fdea
+100644 cad0a96e216242f7f04399fb0bd20dcd091d4747 2	App.tsx
+100644 f5f657f59e97291bca9b0102a1805291127e8679 3	App.tsx
+100644 79c46c5148ced2fa6acd4bd2b8b4cdb69ae0c2e7 2	components/ChatInterface.css
+100644 f3077d157a927b1c48f6cd6c2c79aab5f87bfc70 3	components/ChatInterface.css
+100644 3084e5bbd69b327175ad51ae66e2179084e27e91 2	domains.ts
+100644 0dfccf695697266965035b366322268f539392fe 3	domains.ts
+100644 717779805d325b4e4a55f99ea74b916666497e76 2	services/chatOrchestrationService.ts
+100644 8c779ab80b9cbfcb2e4c781c476af1b9b5088efe 3	services/chatOrchestrationService.ts
+100644 5d5c5a85dc3e9462d071195b61ae2a204b405e03 2	services/geminiService.ts
+100644 f1f568efbff940da67b2b3aa7f4dd2170bad3863 3	services/geminiService.ts
+100644 93d54c261995a0bac75c82c2f46412d6dc795f7d 2	services/placesAPIService.ts
+100644 0b189fb7826982379eaebbfdac4fe41fdf1baa51 3	services/placesAPIService.ts
+
+Auto-merging App.tsx
+CONFLICT (add/add): Merge conflict in App.tsx
+Auto-merging components/ChatInterface.css
+CONFLICT (add/add): Merge conflict in components/ChatInterface.css
+Auto-merging domains.ts
+CONFLICT (add/add): Merge conflict in domains.ts
+Auto-merging services/chatOrchestrationService.ts
+CONFLICT (add/add): Merge conflict in services/chatOrchestrationService.ts
+Auto-merging services/geminiService.ts
+CONFLICT (add/add): Merge conflict in services/geminiService.ts
+Auto-merging services/placesAPIService.ts
+CONFLICT (add/add): Merge conflict in services/placesAPIService.ts

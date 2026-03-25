@@ -1,6 +1,9 @@
 
 import { GoogleGenAI } from "@google/genai";
 import { ScoringMatrix } from "../types";
+import { GEMINI_PROXY_URL, USE_DIRECT_API } from './apiConfig';
+
+const DIRECT_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.VITE_API_KEY || '';
 
 export interface GroundingSource {
   title: string;
@@ -13,8 +16,6 @@ export interface AnalysisResponse {
 }
 
 export const getSiteGuidance = async (lat: number, lng: number, scores: ScoringMatrix): Promise<AnalysisResponse> => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.VITE_API_KEY || '';
-  const ai = new GoogleGenAI({ apiKey });
 
   const prompt = `
     Perform a high-precision Site Feasibility Study for a Gym at: Lat ${lat}, Lng ${lng} (HSR Layout, Bangalore).
@@ -33,42 +34,34 @@ export const getSiteGuidance = async (lat: number, lng: number, scores: ScoringM
   `;
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-      config: {
-        tools: [{ googleMaps: {} }],
-        toolConfig: {
-          retrievalConfig: {
-            latLng: {
-              latitude: lat,
-              longitude: lng
-            }
-          }
-        }
-      },
-    });
-
-    const text = response.text || "Analysis complete.";
-    const sources: GroundingSource[] = [];
-
-    const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-    chunks.forEach((chunk: any) => {
-      if (chunk.maps) {
-        sources.push({
-          title: chunk.maps.title || "Location Source",
-          uri: chunk.maps.uri
-        });
-      }
-    });
-
-    return { text, sources };
+    if (USE_DIRECT_API) {
+      const ai = new GoogleGenAI({ apiKey: DIRECT_API_KEY });
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+        config: {
+          tools: [{ googleMaps: {} }],
+          toolConfig: { retrievalConfig: { latLng: { latitude: lat, longitude: lng } } }
+        },
+      });
+      const text = response.text || 'Analysis complete.';
+      const sources: GroundingSource[] = [];
+      const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+      chunks.forEach((chunk: any) => { if (chunk.maps) sources.push({ title: chunk.maps.title || 'Location Source', uri: chunk.maps.uri }); });
+      return { text, sources };
+    } else {
+      // Route through Cloud Function proxy
+      const resp = await fetch(GEMINI_PROXY_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: [{ role: 'user', content: prompt }] }),
+      });
+      const data = await resp.json();
+      return { text: data.text || 'Analysis complete.', sources: [] };
+    }
   } catch (error) {
-    console.error("Gemini Market Scan Error:", error);
-    return {
-      text: "Real-time market scan failed. Falling back to local heuristic analysis.",
-      sources: []
-    };
+    console.error('Gemini Market Scan Error:', error);
+    return { text: 'Real-time market scan failed. Falling back to local heuristic analysis.', sources: [] };
   }
 };
 
@@ -98,41 +91,37 @@ export const generateAdvanced = async (prompt: string, options?: {
   useMaps?: boolean;
   mapsLatLng?: { latitude: number; longitude: number };
 }) => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.VITE_API_KEY || '';
-  const ai = new GoogleGenAI({ apiKey });
-
-  const cfg: any = {
-    temperature: options?.temperature ?? 0.2,
-    candidateCount: options?.candidateCount ?? 1,
-    maxOutputTokens: options?.maxOutputTokens ?? 512
-  };
-
-  if (options?.useMaps) {
-    cfg.tools = [{ googleMaps: {} }];
-    if (options.mapsLatLng) {
-      cfg.toolConfig = { retrievalConfig: { latLng: options.mapsLatLng } };
-    }
-  }
-
   try {
-    const response = await ai.models.generateContent({
-      model: options?.model || 'gemini-2.5-flash',
-      contents: prompt,
-      config: cfg
-    });
-
-    const text = (response?.text) || (response?.candidates?.[0]?.content?.[0]?.text) || '';
-
-    // Extract grounding sources if present
-    const sources: GroundingSource[] = [];
-    const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-    chunks.forEach((chunk: any) => {
-      if (chunk.maps) {
-        sources.push({ title: chunk.maps.title || 'Location Source', uri: chunk.maps.uri });
+    if (USE_DIRECT_API) {
+      const ai = new GoogleGenAI({ apiKey: DIRECT_API_KEY });
+      const cfg: any = {
+        temperature: options?.temperature ?? 0.2,
+        candidateCount: options?.candidateCount ?? 1,
+        maxOutputTokens: options?.maxOutputTokens ?? 512
+      };
+      if (options?.useMaps) {
+        cfg.tools = [{ googleMaps: {} }];
+        if (options.mapsLatLng) cfg.toolConfig = { retrievalConfig: { latLng: options.mapsLatLng } };
       }
-    });
-
-    return { text, sources, raw: response } as { text: string; sources: GroundingSource[]; raw: any };
+      const response = await ai.models.generateContent({ model: options?.model || 'gemini-2.5-flash', contents: prompt, config: cfg });
+      const text = (response?.text) || '';
+      const sources: GroundingSource[] = [];
+      const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+      chunks.forEach((chunk: any) => { if (chunk.maps) sources.push({ title: chunk.maps.title || 'Location Source', uri: chunk.maps.uri }); });
+      return { text, sources, raw: response } as { text: string; sources: GroundingSource[]; raw: any };
+    } else {
+      // Route through Cloud Function proxy
+      const resp = await fetch(GEMINI_PROXY_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: prompt }],
+          systemPrompt: 'You are a geo-intelligence assistant for Geo-Intel Dashboard.'
+        }),
+      });
+      const data = await resp.json();
+      return { text: data.text || '', sources: [], raw: data } as { text: string; sources: GroundingSource[]; raw: any };
+    }
   } catch (err) {
     console.error('generateAdvanced error:', err);
     return { text: '', sources: [], raw: null };

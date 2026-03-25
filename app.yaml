@@ -1,0 +1,25 @@
+# GCP Cloud Run Deployment Configuration
+# This tells GCP Cloud Build how to deploy your app
+
+runtime: nodejs18
+env: flex
+
+env_variables:
+  NODE_ENV: "production"
+
+service: geo-intel-dashboard
+
+automatic_scaling:
+  min_instances: 1
+  max_instances: 10
+
+health_check:
+  enable_health_check: true
+  check_interval_sec: 30
+  timeout_sec: 10
+
+handlers:
+  - url: /.*
+    script: auto
+    secure: always
+    redirect_http_response_code: 301
