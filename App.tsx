@@ -16,6 +16,8 @@ import { ChatInterface } from './components/ChatInterface';
 import { addMessage, loadConversationHistory, clearConversationHistory, getRecentContext, extractLocationMentions, Message } from './services/conversationService';
 import { processUserQuery } from './services/chatOrchestrationService';
 import { TutorialOverlay } from './components/TutorialOverlay';
+import { useAuth } from './context/AuthContext';
+import { LoginPage } from './components/LoginPage';
 
 /**
  * GYM-LOCATE: Geo-Intel Command Center (v8)
@@ -324,7 +326,40 @@ const SEARCH_KEYWORDS = [
     'retail in', 'shops in', 'supermarket near',
 ];
 
-const App: React.FC = () => {
+// ── Auth-aware shell wraps the real App ────────────────────────────────────
+// Kept separate so that App's hooks are never conditionally skipped.
+export const AppShell: React.FC = () => {
+    const { user, loading: authLoading, logout } = useAuth();
+    const [showUserMenu, setShowUserMenu] = React.useState(false);
+
+    if (authLoading) {
+        return (
+            <div style={{
+                minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: 'linear-gradient(135deg, #0f0c29, #1a1040, #1e1260)',
+                color: '#a78bfa', fontFamily: 'Inter, system-ui, sans-serif', gap: '12px', fontSize: '15px', fontWeight: 700,
+            }}>
+                <div style={{ width: 24, height: 24, border: '3px solid #6366f1', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+                Loading...
+            </div>
+        );
+    }
+
+    if (!user) return <LoginPage />;
+
+    return <App user={user} logout={logout} showUserMenu={showUserMenu} setShowUserMenu={setShowUserMenu} />;
+};
+
+export default AppShell;
+
+// ── Dashboard app (all hooks live here unconditionally) ─────────────────────
+const App: React.FC<{
+    user: import('./context/AuthContext').GoogleUser;
+    logout: () => void;
+    showUserMenu: boolean;
+    setShowUserMenu: React.Dispatch<React.SetStateAction<boolean>>;
+}> = ({ user, logout, showUserMenu, setShowUserMenu }) => {
     const [selectedPos, setSelectedPos] = useState<[number, number] | null>(null);
     const [searchRadius, setSearchRadius] = useState<number>(1000);
     const [scores, setScores] = useState<ScoringMatrix | null>(null);
@@ -1439,6 +1474,45 @@ const App: React.FC = () => {
                             </div>
                         </div>
 
+                        {/* User Avatar + Sign Out Menu */}
+                        <div className="relative flex-shrink-0 ml-auto" style={{ zIndex: 60 }}>
+                            <button
+                                id="user-avatar-btn"
+                                onClick={() => setShowUserMenu(v => !v)}
+                                title={user.name}
+                                className="flex items-center gap-2 pl-1 pr-2 py-1 rounded-full bg-white/70 border border-slate-200 hover:border-indigo-400 hover:shadow-md transition-all"
+                            >
+                                <img
+                                    src={user.picture}
+                                    alt={user.name}
+                                    className="w-7 h-7 rounded-full object-cover border-2 border-indigo-400"
+                                    referrerPolicy="no-referrer"
+                                />
+                                <span className="hidden sm:block text-[11px] font-bold text-slate-700 max-w-[90px] truncate">{user.given_name}</span>
+                                <svg className="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                                </svg>
+                            </button>
+                            {showUserMenu && (
+                                <div className="absolute right-0 mt-2 w-56 bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden animate-in slide-in-from-top-2 duration-200">
+                                    <div className="px-4 py-3 bg-gradient-to-r from-indigo-50 to-purple-50 border-b border-slate-100">
+                                        <div className="text-xs font-black text-slate-800 truncate">{user.name}</div>
+                                        <div className="text-[10px] text-slate-500 truncate mt-0.5">{user.email}</div>
+                                    </div>
+                                    <button
+                                        id="sign-out-btn"
+                                        onClick={() => { logout(); setShowUserMenu(false); }}
+                                        className="w-full text-left px-4 py-3 text-xs font-bold text-red-600 hover:bg-red-50 flex items-center gap-2 transition-colors"
+                                    >
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                                        </svg>
+                                        Sign out
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+
                         {/* Search Input */}
                         <div className="flex-1 relative">
                             <input
@@ -1930,6 +2004,4 @@ const App: React.FC = () => {
         </div>
     );
 };
-
-export default App;
 
