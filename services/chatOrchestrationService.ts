@@ -188,6 +188,33 @@ async function geocodeQuery(query: string): Promise<[number, number] | null> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Fix 6 — Gemini API Retry Logic (Handles 503 / 429)
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function callGeminiWithRetry(callFn: () => Promise<any>, maxRetries = 3, baseDelayMs = 2000): Promise<any> {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            return await callFn();
+        } catch (error: any) {
+            const isRetryable = 
+                error?.status === 503 || 
+                error?.status === 'UNAVAILABLE' || 
+                error?.message?.includes('503') || 
+                error?.status === 429 ||
+                error?.message?.includes('429');
+                
+            if (isRetryable && attempt < maxRetries - 1) {
+                const delayMs = baseDelayMs * Math.pow(1.5, attempt);
+                console.warn(`⚠️ Gemini API heavily loaded. Retrying in ${Math.round(delayMs)}ms... (Attempt ${attempt + 1}/${maxRetries})`);
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+            } else {
+                throw error;
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main orchestration entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -225,23 +252,25 @@ export async function processUserQuery(
         // ── Step 1: Intent detection call ─────────────────────────────────
         let geminiText = '';
         try {
-            if (USE_DIRECT_API) {
-                const ai = new GoogleGenAI({ apiKey: DIRECT_API_KEY });
-                const response = await ai.models.generateContent({
-                    model: 'gemini-2.5-flash',
-                    contents: fullPrompt,
-                    config: { temperature: 0.2, maxOutputTokens: 400 }  // Fix 1: cap at 400
-                });
-                geminiText = response.text || '';
-            } else {
-                const resp = await fetch(GEMINI_PROXY_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ messages: [{ role: 'user', content: fullPrompt }] }),
-                });
-                const data = await resp.json();
-                geminiText = data.text || '';
-            }
+            geminiText = await callGeminiWithRetry(async () => {
+                if (USE_DIRECT_API) {
+                    const ai = new GoogleGenAI({ apiKey: DIRECT_API_KEY });
+                    const response = await ai.models.generateContent({
+                        model: 'gemini-2.5-flash',
+                        contents: fullPrompt,
+                        config: { temperature: 0.2, maxOutputTokens: 400 }  // Fix 1: cap at 400
+                    });
+                    return response.text || '';
+                } else {
+                    const resp = await fetch(GEMINI_PROXY_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ messages: [{ role: 'user', content: fullPrompt }] }),
+                    });
+                    const data = await resp.json();
+                    return data.text || '';
+                }
+            });
         } catch (intentErr) {
             console.error('❌ Gemini intent call failed:', intentErr);
             return {
@@ -264,24 +293,25 @@ export async function processUserQuery(
                 console.warn('⚠️ Suspected broken JSON from Gemini — retrying with prose-only instruction');
                 try {
                     const retryPrompt = `${systemPrompt}\n\nUser: ${userMessage}\n\nIMPORTANT: Respond ONLY in natural language — no JSON, no code blocks.`;
-                    let retryText = '';
-                    if (USE_DIRECT_API) {
-                        const ai = new GoogleGenAI({ apiKey: DIRECT_API_KEY });
-                        const retryResponse = await ai.models.generateContent({
-                            model: 'gemini-2.5-flash',
-                            contents: retryPrompt,
-                            config: { temperature: 0.4, maxOutputTokens: 800 }
-                        });
-                        retryText = retryResponse.text || '';
-                    } else {
-                        const resp = await fetch(GEMINI_PROXY_URL, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ messages: [{ role: 'user', content: retryPrompt }] }),
-                        });
-                        const data = await resp.json();
-                        retryText = data.text || '';
-                    }
+                    let retryText = await callGeminiWithRetry(async () => {
+                        if (USE_DIRECT_API) {
+                            const ai = new GoogleGenAI({ apiKey: DIRECT_API_KEY });
+                            const retryResponse = await ai.models.generateContent({
+                                model: 'gemini-2.5-flash',
+                                contents: retryPrompt,
+                                config: { temperature: 0.4, maxOutputTokens: 800 }
+                            });
+                            return retryResponse.text || '';
+                        } else {
+                            const resp = await fetch(GEMINI_PROXY_URL, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ messages: [{ role: 'user', content: retryPrompt }] }),
+                            });
+                            const data = await resp.json();
+                            return data.text || '';
+                        }
+                    });
                     return {
                         text: stripJsonBlocks(retryText) || 'I can help you analyse locations in Bangalore. Could you clarify what you need?',
                         usedPlacesAPI: false,
@@ -361,23 +391,25 @@ Respond ONLY in natural language — no JSON, no code blocks.`;
 
             let finalText = '';
             try {
-                if (USE_DIRECT_API) {
-                    const ai = new GoogleGenAI({ apiKey: DIRECT_API_KEY });
-                    const finalResponse = await ai.models.generateContent({
-                        model: 'gemini-2.5-flash',
-                        contents: contextualPrompt,
-                        config: { temperature: 0.4, maxOutputTokens: 3000 }  // 3000 for rich answers
-                    });
-                    finalText = stripJsonBlocks(finalResponse.text || 'Analysis complete.');
-                } else {
-                    const resp = await fetch(GEMINI_PROXY_URL, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ messages: [{ role: 'user', content: contextualPrompt }] }),
-                    });
-                    const data = await resp.json();
-                    finalText = stripJsonBlocks(data.text || 'Analysis complete.');
-                }
+                finalText = await callGeminiWithRetry(async () => {
+                    if (USE_DIRECT_API) {
+                        const ai = new GoogleGenAI({ apiKey: DIRECT_API_KEY });
+                        const finalResponse = await ai.models.generateContent({
+                            model: 'gemini-2.5-flash',
+                            contents: contextualPrompt,
+                            config: { temperature: 0.4, maxOutputTokens: 3000 }  // 3000 for rich answers
+                        });
+                        return stripJsonBlocks(finalResponse.text || 'Analysis complete.');
+                    } else {
+                        const resp = await fetch(GEMINI_PROXY_URL, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ messages: [{ role: 'user', content: contextualPrompt }] }),
+                        });
+                        const data = await resp.json();
+                        return stripJsonBlocks(data.text || 'Analysis complete.');
+                    }
+                });
             } catch (synthErr) {
                 console.error('❌ Gemini synthesiser call failed:', synthErr);
                 finalText = 'I gathered the location data but had trouble generating the summary. Please try again.';
@@ -506,24 +538,25 @@ Compare both areas for a **${domainCfg.label}** opportunity. Present a side-by-s
 - Final recommendation: which area is the better bet and why
 Respond in natural language with a clear recommendation. No JSON. Be concise but data-driven.`;
 
-        let finalText = '';
-        if (USE_DIRECT_API) {
-            const ai = new GoogleGenAI({ apiKey: DIRECT_API_KEY });
-            const finalResponse = await ai.models.generateContent({
-                model: 'gemini-2.5-flash',
-                contents: comparePrompt,
-                config: { temperature: 0.4, maxOutputTokens: 3000 }
-            });
-            finalText = stripJsonBlocks(finalResponse.text || 'Comparison complete.');
-        } else {
-            const resp = await fetch(GEMINI_PROXY_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages: [{ role: 'user', content: comparePrompt }] }),
-            });
-            const data = await resp.json();
-            finalText = stripJsonBlocks(data.text || 'Comparison complete.');
-        }
+        const finalText = await callGeminiWithRetry(async () => {
+            if (USE_DIRECT_API) {
+                const ai = new GoogleGenAI({ apiKey: DIRECT_API_KEY });
+                const finalResponse = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash',
+                    contents: comparePrompt,
+                    config: { temperature: 0.4, maxOutputTokens: 3000 }
+                });
+                return stripJsonBlocks(finalResponse.text || 'Comparison complete.');
+            } else {
+                const resp = await fetch(GEMINI_PROXY_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ messages: [{ role: 'user', content: comparePrompt }] }),
+                });
+                const data = await resp.json();
+                return stripJsonBlocks(data.text || 'Comparison complete.');
+            }
+        });
 
         // Navigate map to the winning location (higher score)
         const winnerGeo = score1.total >= score2.total ? geo1 : geo2;

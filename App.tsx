@@ -192,9 +192,10 @@ const MapZoomController = ({ center, zoom, navigateKey }: { center: [number, num
 const BANGALORE_CENTER = { lat: 12.9716, lng: 77.5946 };
 
 // Ward layer component
-const WardLayer = ({ onWardClick, activeDomain }: { onWardClick: (lat: number, lng: number, wardName: string) => void, activeDomain: DomainId }) => {
+const WardLayer = ({ onWardClick, activeDomain, wardScores }: { onWardClick: (lat: number, lng: number, wardName: string) => void, activeDomain: DomainId, wardScores: Record<string, any> }) => {
     const [wardsGeoJSON, setWardsGeoJSON] = useState<any>(null);
     const [wardData, setWardData] = useState<Record<string, any>>({});
+    const geoJsonRef = useRef<any>(null);
 
     useEffect(() => {
         // Load GeoJSON
@@ -227,11 +228,30 @@ const WardLayer = ({ onWardClick, activeDomain }: { onWardClick: (lat: number, l
             });
     }, []);
 
-    const getColor = (score: number) => {
-        if (score > 0.25) return '#10b981'; // High - emerald
-        if (score > 0.18) return '#f59e0b'; // Medium - amber
-        return '#ef4444'; // Low - red
+    const getColor = (staticScore: number, liveScore?: number) => {
+        if (liveScore !== undefined) {
+            if (liveScore >= 0.70) return '#10b981'; // High - emerald
+            if (liveScore >= 0.45) return '#f59e0b'; // Medium - amber
+            return '#ef4444'; // Low - red
+        }
+        // Constant theme color for initial un-analyzed state
+        return '#6366f1'; // App theme (Indigo)
     };
+
+    useEffect(() => {
+        if (geoJsonRef.current && Object.keys(wardData).length > 0) {
+            geoJsonRef.current.eachLayer((layer: any) => {
+                const wardId = layer.feature.properties.ward_id;
+                const data = wardData[wardId];
+                if (data) {
+                    const live = wardScores[`ward-${wardId}`];
+                    layer.setStyle({
+                        fillColor: getColor(data.finalScore, live?.finalScore)
+                    });
+                }
+            });
+        }
+    }, [wardScores, wardData]);
 
     const onEachFeature = (feature: any, layer: any) => {
         const wardId = feature.properties.ward_id;
@@ -272,12 +292,14 @@ const WardLayer = ({ onWardClick, activeDomain }: { onWardClick: (lat: number, l
 
     return (
         <GeoJSON
+            ref={geoJsonRef}
             data={wardsGeoJSON}
             style={(feature) => {
                 const wardId = feature?.properties?.ward_id;
                 const data = wardData[wardId];
+                const live = wardScores[`ward-${wardId}`];
                 return {
-                    fillColor: data ? getColor(data.finalScore) : '#ccc',
+                    fillColor: data ? getColor(data.finalScore, live?.finalScore) : '#ccc',
                     weight: 1,
                     opacity: 0.8,
                     color: '#333',
@@ -576,10 +598,8 @@ const App: React.FC = () => {
                         const cafeCount = parseInt(parts[10]) || 0;
                         const growthRate = parseFloat(parts[5]) || 0;
 
-                        // Determine color based on final score
-                        let color = '#ef4444'; // Red - low
-                        if (finalScore > 0.25) color = '#10b981'; // Green - high
-                        else if (finalScore > 0.18) color = '#f59e0b'; // Amber - medium
+                        // Set a constant app theme color for initial state
+                        const color = '#6366f1'; // App theme (Indigo)
 
                         return {
                             id: `ward-${wardId}`,
@@ -1024,7 +1044,7 @@ const App: React.FC = () => {
                     />
 
                     {/* Ward Boundaries Layer */}
-                    <WardLayer onWardClick={handleWardClick} activeDomain={activeDomain as DomainId} />
+                    <WardLayer onWardClick={handleWardClick} activeDomain={activeDomain as DomainId} wardScores={wardScores} />
 
                     {/* {showHeatmap && <HeatmapLayer locations={MOCK_LOCATIONS} />} */}
                     <MapEvents onMapClick={handleMapClick} />
@@ -1184,6 +1204,15 @@ const App: React.FC = () => {
                         const displayCorporates = isAnalyzed ? realPOIs.corporates.length : 0;
                         const displayApartments = isAnalyzed ? realPOIs.apartments.length : 0;
 
+                        // Dynamic marker coloring based on live scores if available
+                        let markerColor = cluster.color;
+                        const liveScore = wardScores[cluster.id];
+                        if (liveScore) {
+                            if (liveScore.finalScore >= 0.70) markerColor = '#10b981'; // High
+                            else if (liveScore.finalScore >= 0.45) markerColor = '#f59e0b'; // Medium
+                            else markerColor = '#ef4444'; // Low
+                        }
+
                         return (
                             <Marker
                                 key={cluster.id}
@@ -1191,8 +1220,8 @@ const App: React.FC = () => {
                                 icon={new L.DivIcon({
                                     className: 'cluster-marker',
                                     html: `<div class="relative flex items-center justify-center cursor-pointer group">
-                                         <div class="absolute w-20 h-20 rounded-full animate-pulse" style="background: ${cluster.color}20;"></div>
-                                         <div class="w-12 h-12 rounded-full border-4 border-white shadow-2xl flex items-center justify-center font-black text-white text-base transition-transform group-hover:scale-110" style="background: ${cluster.color};">
+                                         <div class="absolute w-20 h-20 rounded-full animate-pulse" style="background: ${markerColor}20;"></div>
+                                         <div class="w-12 h-12 rounded-full border-4 border-white shadow-2xl flex items-center justify-center font-black text-white text-base transition-transform group-hover:scale-110" style="background: ${markerColor};">
                                            🎯
                                          </div>
                                          <!-- Clickable indicator -->
