@@ -1,8 +1,8 @@
 FROM node:18-alpine
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 COPY . .
 EXPOSE 8080
-# Functions Framework auto-detects PORT env var injected by Cloud Run
-CMD ["node", "--max-old-space-size=256", "node_modules/@google-cloud/functions-framework/build/src/index.js", "--target=geminiProxy", "--port=8080"]
+# functions-framework binary reads $PORT env var automatically (Cloud Run injects PORT=8080)
+CMD ["node_modules/.bin/functions-framework", "--target=geminiProxy"]

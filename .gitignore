@@ -11,3 +11,6 @@ yarn-debug.log*
 yarn-error.log*
 .DS_Store
 .vite
+
+# Ignore service accounts
+service-account.json

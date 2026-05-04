@@ -1,108 +1,10 @@
-# Google Cloud Build configuration — testing-jithin / asia-south1
-#
-# Deploys 3 Cloud Run services:
-#   1. gemini-proxy       — secure server-side Gemini API proxy
-#   2. places-api-proxy   — secure server-side Google Places API proxy
-#   3. geo-intel-dashboard — React frontend (references proxy URLs, NOT API keys)
-#
-# API keys are stored in Secret Manager and NEVER reach the browser JS bundle.
+# Cloud Build — Geo-Intel Dashboard Frontend
+# Uses --substitutions instead of secretEnv to avoid Cloud Build Secret Manager permission issues.
+# Values are passed directly via: gcloud builds submit --substitutions=_KEY=value
 # ─────────────────────────────────────────────────────────────────────────────
 
 steps:
-
-  # ════════════════════════════════════════════════════════════════════
-  # SERVICE 1: Gemini Proxy (holds GEMINI_API_KEY server-side)
-  # ════════════════════════════════════════════════════════════════════
-
-  # 1a. Build gemini-proxy image
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'build-gemini-proxy'
-    args:
-      - 'build'
-      - '-t'
-      - 'asia-south1-docker.pkg.dev/$PROJECT_ID/geo-intel/gemini-proxy:$SHORT_SHA'
-      - '-t'
-      - 'asia-south1-docker.pkg.dev/$PROJECT_ID/geo-intel/gemini-proxy:latest'
-      - './cloud-functions/gemini-proxy'
-
-  # 1b. Push gemini-proxy image
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'push-gemini-proxy'
-    args:
-      - 'push'
-      - '--all-tags'
-      - 'asia-south1-docker.pkg.dev/$PROJECT_ID/geo-intel/gemini-proxy'
-    waitFor: ['build-gemini-proxy']
-
-  # 1c. Deploy gemini-proxy — GEMINI_API_KEY injected as runtime env var from Secret Manager
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    id: 'deploy-gemini-proxy'
-    entrypoint: 'gcloud'
-    args:
-      - 'run'
-      - 'deploy'
-      - 'gemini-proxy'
-      - '--image=asia-south1-docker.pkg.dev/$PROJECT_ID/geo-intel/gemini-proxy:$SHORT_SHA'
-      - '--platform=managed'
-      - '--region=asia-south1'
-      - '--allow-unauthenticated'
-      - '--memory=512Mi'
-      - '--cpu=1'
-      - '--min-instances=0'
-      - '--max-instances=3'
-      - '--port=8080'
-      - '--update-secrets=GEMINI_API_KEY=VITE_GEMINI_API_KEY:latest'
-    waitFor: ['push-gemini-proxy']
-
-  # ════════════════════════════════════════════════════════════════════
-  # SERVICE 2: Places API Proxy (holds GOOGLE_MAPS_API_KEY server-side)
-  # ════════════════════════════════════════════════════════════════════
-
-  # 2a. Build places-api-proxy image
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'build-places-proxy'
-    args:
-      - 'build'
-      - '-t'
-      - 'asia-south1-docker.pkg.dev/$PROJECT_ID/geo-intel/places-proxy:$SHORT_SHA'
-      - '-t'
-      - 'asia-south1-docker.pkg.dev/$PROJECT_ID/geo-intel/places-proxy:latest'
-      - './cloud-functions/places-api-proxy'
-
-  # 2b. Push places-api-proxy image
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'push-places-proxy'
-    args:
-      - 'push'
-      - '--all-tags'
-      - 'asia-south1-docker.pkg.dev/$PROJECT_ID/geo-intel/places-proxy'
-    waitFor: ['build-places-proxy']
-
-  # 2c. Deploy places-api-proxy — GOOGLE_MAPS_API_KEY injected as runtime env var
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    id: 'deploy-places-proxy'
-    entrypoint: 'gcloud'
-    args:
-      - 'run'
-      - 'deploy'
-      - 'places-api-proxy'
-      - '--image=asia-south1-docker.pkg.dev/$PROJECT_ID/geo-intel/places-proxy:$SHORT_SHA'
-      - '--platform=managed'
-      - '--region=asia-south1'
-      - '--allow-unauthenticated'
-      - '--memory=256Mi'
-      - '--cpu=1'
-      - '--min-instances=0'
-      - '--max-instances=3'
-      - '--port=8080'
-      - '--update-secrets=GOOGLE_MAPS_API_KEY=VITE_GOOGLE_MAPS_API_KEY:latest'
-    waitFor: ['push-places-proxy']
-
-  # ════════════════════════════════════════════════════════════════════
-  # SERVICE 3: Frontend Dashboard (NO API keys — only proxy URLs + OAuth Client ID)
-  # ════════════════════════════════════════════════════════════════════
-
-  # 3a. Build frontend image — only VITE_GOOGLE_CLIENT_ID and proxy URLs baked in
+  # ── Step 1: Build frontend image ──────────────────────────────────────────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-frontend'
     entrypoint: 'bash'
@@ -110,19 +12,14 @@ steps:
       - '-c'
       - |
         docker build \
-          --build-arg VITE_GOOGLE_CLIENT_ID=$$VITE_GOOGLE_CLIENT_ID \
-          --build-arg VITE_PLACES_PROXY_URL=$$VITE_PLACES_PROXY_URL \
-          --build-arg VITE_GEMINI_PROXY_URL=$$VITE_GEMINI_PROXY_URL \
+          --build-arg VITE_GOOGLE_CLIENT_ID=${_VITE_GOOGLE_CLIENT_ID} \
+          --build-arg VITE_PLACES_PROXY_URL=${_VITE_PLACES_PROXY_URL} \
+          --build-arg VITE_GEMINI_PROXY_URL=${_VITE_GEMINI_PROXY_URL} \
           -t asia-south1-docker.pkg.dev/$PROJECT_ID/geo-intel/dashboard:$SHORT_SHA \
           -t asia-south1-docker.pkg.dev/$PROJECT_ID/geo-intel/dashboard:latest \
           .
-    secretEnv:
-      - 'VITE_GOOGLE_CLIENT_ID'
-      - 'VITE_PLACES_PROXY_URL'
-      - 'VITE_GEMINI_PROXY_URL'
-    waitFor: ['deploy-gemini-proxy', 'deploy-places-proxy']
 
-  # 3b. Push frontend image
+  # ── Step 2: Push image ────────────────────────────────────────────────────
   - name: 'gcr.io/cloud-builders/docker'
     id: 'push-frontend'
     args:
@@ -131,7 +28,7 @@ steps:
       - 'asia-south1-docker.pkg.dev/$PROJECT_ID/geo-intel/dashboard'
     waitFor: ['build-frontend']
 
-  # 3c. Deploy frontend — no secrets needed at runtime
+  # ── Step 3: Deploy to Cloud Run ───────────────────────────────────────────
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'deploy-frontend'
     entrypoint: 'gcloud'
@@ -145,33 +42,14 @@ steps:
       - '--allow-unauthenticated'
       - '--memory=512Mi'
       - '--cpu=1'
-      - '--min-instances=0'
-      - '--max-instances=5'
       - '--port=8080'
     waitFor: ['push-frontend']
 
-# ── Secret Manager bindings for Cloud Build ───────────────────────────────────
-availableSecrets:
-  secretManager:
-    - versionName: projects/$PROJECT_ID/secrets/VITE_GOOGLE_MAPS_API_KEY/versions/latest
-      env: 'VITE_GOOGLE_MAPS_API_KEY'
-    - versionName: projects/$PROJECT_ID/secrets/VITE_GEMINI_API_KEY/versions/latest
-      env: 'VITE_GEMINI_API_KEY'
-    - versionName: projects/$PROJECT_ID/secrets/VITE_GOOGLE_CLIENT_ID/versions/latest
-      env: 'VITE_GOOGLE_CLIENT_ID'
-    - versionName: projects/$PROJECT_ID/secrets/VITE_PLACES_PROXY_URL/versions/latest
-      env: 'VITE_PLACES_PROXY_URL'
-    - versionName: projects/$PROJECT_ID/secrets/VITE_GEMINI_PROXY_URL/versions/latest
-      env: 'VITE_GEMINI_PROXY_URL'
-
-# ── Image tracking ────────────────────────────────────────────────────────────
 images:
-  - 'asia-south1-docker.pkg.dev/$PROJECT_ID/geo-intel/gemini-proxy:latest'
-  - 'asia-south1-docker.pkg.dev/$PROJECT_ID/geo-intel/places-proxy:latest'
   - 'asia-south1-docker.pkg.dev/$PROJECT_ID/geo-intel/dashboard:latest'
+  - 'asia-south1-docker.pkg.dev/$PROJECT_ID/geo-intel/dashboard:$SHORT_SHA'
 
 options:
-  machineType: 'N1_HIGHCPU_8'
   logging: CLOUD_LOGGING_ONLY
 
-timeout: '2400s'
+timeout: '1800s'

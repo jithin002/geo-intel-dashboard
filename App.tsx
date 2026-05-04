@@ -18,6 +18,7 @@ import { processUserQuery } from './services/chatOrchestrationService';
 import { TutorialOverlay } from './components/TutorialOverlay';
 import { useAuth } from './context/AuthContext';
 import { LoginPage } from './components/LoginPage';
+import { getRentInsights, RentInsights } from './services/rentIntelligenceService';
 
 /**
  * GYM-LOCATE: Geo-Intel Command Center (v8)
@@ -405,6 +406,10 @@ const App: React.FC<{
     const [activeDomain, setActiveDomain] = useState<DomainId>('gym');
     const [mobileView, setMobileView] = useState<'map' | 'analytics' | 'chat'>('map');
     const [sheetState, setSheetState] = useState<'peek' | 'half' | 'full'>('half');
+
+    // RENT INTELLIGENCE: fetched from local BigQuery API
+    const [rentInsights, setRentInsights] = useState<RentInsights | null>(null);
+    const [rentLoading, setRentLoading] = useState(false);
 
     // CUSTOM PARAMETERS: user-defined scoring factors
     interface CustomParam {
@@ -844,6 +849,15 @@ const App: React.FC<{
             if (analysisDebounceRef.current) clearTimeout(analysisDebounceRef.current);
         };
     }, [selectedPos, activeDomain, performAnalysis]);
+
+    // Fetch rent insights whenever location or domain changes
+    useEffect(() => {
+        if (!selectedPos) { setRentInsights(null); return; }
+        setRentLoading(true);
+        getRentInsights(selectedPos[0], selectedPos[1], Math.max(searchRadius * 3, 5000), activeDomain)
+            .then(data => { setRentInsights(data); setRentLoading(false); })
+            .catch(() => { setRentLoading(false); });
+    }, [selectedPos, activeDomain, searchRadius]);
 
     // Re-run analysis automatically when a custom parameter is added or removed
     useEffect(() => {
@@ -1931,6 +1945,85 @@ const App: React.FC<{
                         </div>
                         <div className="bg-white border border-slate-200 rounded-2xl lg:rounded-[2rem] p-4 lg:p-6 min-h-[160px] text-[11px] lg:text-sm leading-relaxed text-slate-700 whitespace-pre-wrap font-medium shadow-sm max-h-[220px] lg:max-h-[250px] overflow-y-auto custom-scrollbar transition-all">
                             {aiInsight || "Interactive Site Selection Enabled. Tap any point on the map to begin geospatial grounding and opportunity analysis."}
+                        </div>
+                    </div>
+
+                    {/* ── RENT INTELLIGENCE PANEL ───────────────────────── */}
+                    <div className="border border-emerald-200 rounded-2xl overflow-hidden shrink-0">
+                        <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-emerald-50 to-teal-50">
+                            <span className="text-[10px] font-black text-emerald-700 uppercase tracking-widest">🏠 Rent Intelligence</span>
+                            {rentLoading && <span className="text-[9px] text-emerald-500 animate-pulse font-bold">Fetching...</span>}
+                            {!rentLoading && rentInsights && rentInsights.sample_size > 0 && (
+                                <span className="text-[9px] font-bold text-emerald-600 bg-emerald-100 px-2 py-0.5 rounded-full">{rentInsights.sample_size} listings</span>
+                            )}
+                        </div>
+                        <div className="p-3 bg-white flex flex-col gap-3">
+                            {!selectedPos && (
+                                <p className="text-[10px] text-slate-400 text-center py-2">Select a location on the map to see rent estimates.</p>
+                            )}
+                            {selectedPos && rentLoading && (
+                                <div className="flex items-center justify-center py-4 gap-2 text-emerald-600">
+                                    <div className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+                                    <span className="text-[10px] font-bold">Querying BigQuery...</span>
+                                </div>
+                            )}
+                            {selectedPos && !rentLoading && (!rentInsights || rentInsights.sample_size === 0) && (
+                                <div className="text-center py-3">
+                                    <div className="text-2xl mb-1">📍</div>
+                                    <p className="text-[10px] text-slate-500 font-medium">No listings found within {Math.round(Math.max(searchRadius * 3, 5000) / 1000)}km.</p>
+                                    <p className="text-[9px] text-slate-400 mt-1">Geocoding may be needed. Re-run the uploader.</p>
+                                </div>
+                            )}
+                            {selectedPos && !rentLoading && rentInsights && rentInsights.sample_size > 0 && (
+                                <>
+                                    {/* Price range gauge */}
+                                    <div className="bg-gradient-to-r from-emerald-50 to-teal-50 rounded-xl p-3">
+                                        <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-2">Estimated Rent Range</div>
+                                        <div className="flex items-end justify-between gap-2">
+                                            <div className="text-center">
+                                                <div className="text-[9px] text-slate-400 font-bold">Min</div>
+                                                <div className="text-sm font-black text-emerald-700">₹{Math.round(rentInsights.min_rent)}</div>
+                                            </div>
+                                            <div className="text-center flex-1">
+                                                <div className="text-[9px] text-slate-400 font-bold">Avg</div>
+                                                <div className="text-xl font-black text-emerald-600">₹{Math.round(rentInsights.avg_rent)}</div>
+                                                <div className="text-[8px] text-slate-400 font-medium">/sqft/month</div>
+                                            </div>
+                                            <div className="text-center">
+                                                <div className="text-[9px] text-slate-400 font-bold">Max</div>
+                                                <div className="text-sm font-black text-red-500">₹{Math.round(rentInsights.max_rent)}</div>
+                                            </div>
+                                        </div>
+                                        <div className="mt-2 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                                            <div className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-500"
+                                                style={{ width: `${Math.min((rentInsights.avg_rent / 300) * 100, 100)}%` }} />
+                                        </div>
+                                    </div>
+                                    {/* Comparable listings */}
+                                    {rentInsights.comparables.length > 0 && (
+                                        <div>
+                                            <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">Nearby Comparables</div>
+                                            <div className="flex flex-col gap-1.5">
+                                                {rentInsights.comparables.slice(0, 3).map((c, i) => (
+                                                    <div key={i} className="flex items-center justify-between bg-slate-50 rounded-xl px-3 py-2 border border-slate-100">
+                                                        <div className="flex-1 min-w-0">
+                                                            <div className="text-[9px] font-black text-slate-700 truncate">{c.title || 'Commercial Property'}</div>
+                                                            <div className="text-[8px] text-slate-400 font-medium">{c.area_sqft ? `${Math.round(c.area_sqft)} sqft` : ''}</div>
+                                                        </div>
+                                                        <div className="text-right ml-2 flex-shrink-0">
+                                                            <div className="text-[10px] font-black text-emerald-600">₹{Math.round(c.price_per_sqft)}/sqft</div>
+                                                            {c.listing_url && (
+                                                                <a href={c.listing_url} target="_blank" rel="noreferrer" className="text-[8px] text-indigo-500 font-bold hover:underline">View ↗</a>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                    <p className="text-[8px] text-slate-300 text-center">Data from MagicBricks · {rentInsights.sample_size} listings · {Math.round(Math.max(searchRadius * 3, 5000) / 1000)}km radius</p>
+                                </>
+                            )}
                         </div>
                     </div>
 

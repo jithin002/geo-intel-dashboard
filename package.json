@@ -9,8 +9,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@google-cloud/bigquery": "^8.3.0",
     "@google/genai": "^1.37.0",
     "@react-oauth/google": "^0.13.5",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
     "jwt-decode": "^4.0.0",
     "leaflet": "^1.9.4",
     "leaflet.heat": "^0.2.0",

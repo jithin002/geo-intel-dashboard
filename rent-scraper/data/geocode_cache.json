@@ -1,0 +1,934 @@
+{
+  "hal old airport road": {
+    "lat": 12.9547331,
+    "lng": 77.6837614
+  },
+  "bennigana halli": {
+    "lat": 12.9952678,
+    "lng": 77.6556847
+  },
+  "lavelle road": {
+    "lat": 12.971206,
+    "lng": 77.5978193
+  },
+  "phase 6 jp nagar": {
+    "lat": 12.90502,
+    "lng": 77.58180159999999
+  },
+  "block 4 koramangala": {
+    "lat": 12.9338752,
+    "lng": 77.6301732
+  },
+  "hsr layout": {
+    "lat": 12.9121181,
+    "lng": 77.6445548
+  },
+  "whitefield main road": {
+    "lat": 12.9745163,
+    "lng": 77.750556
+  },
+  "vasanth nagar": {
+    "lat": 12.9896194,
+    "lng": 77.5927948
+  },
+  "sbr earth and sky": {
+    "lat": 13.0256794,
+    "lng": 77.7616118
+  },
+  "sector 1st hsr layout": {
+    "lat": 12.8818225,
+    "lng": 77.6262522
+  },
+  "block 2nd hrbr layout": {
+    "lat": 13.0231203,
+    "lng": 77.652173
+  },
+  "project hsr layout": {
+    "lat": 12.9121181,
+    "lng": 77.6445548
+  },
+  "basaveshwar nagar": {
+    "lat": 12.9879576,
+    "lng": 77.5374662
+  },
+  "richmond town": {
+    "lat": 12.9635893,
+    "lng": 77.6044928
+  },
+  "brookefield": {
+    "lat": 12.9655152,
+    "lng": 77.7184444
+  },
+  "avenue road": {
+    "lat": 12.968609,
+    "lng": 77.57904
+  },
+  "uttarahalli hobli": {
+    "lat": 12.9069823,
+    "lng": 77.552059
+  },
+  "mysore bank colony jp nagar": {
+    "lat": 12.8849439,
+    "lng": 77.57268839999999
+  },
+  "bcchs layout": {
+    "lat": 12.8705807,
+    "lng": 77.54527560000001
+  },
+  "vidyaranyapura": {
+    "lat": 13.0810718,
+    "lng": 77.55616669999999
+  },
+  "project new thippasandra": {
+    "lat": 12.9717571,
+    "lng": 77.6551929
+  },
+  "ashwini layout": {
+    "lat": 12.9402346,
+    "lng": 77.6289117
+  },
+  "horamavu": {
+    "lat": 13.0288248,
+    "lng": 77.6637416
+  },
+  "arekere": {
+    "lat": 12.8873875,
+    "lng": 77.59688659999999
+  },
+  "wilson garden": {
+    "lat": 12.9481933,
+    "lng": 77.59718649999999
+  },
+  "devanahalli": {
+    "lat": null,
+    "lng": null
+  },
+  "khb colony yelahanka new town": {
+    "lat": 13.1086961,
+    "lng": 77.5759122
+  },
+  "individual villa bannerghatta road to electronic city road": {
+    "lat": 12.8421454,
+    "lng": 77.6713564
+  },
+  "block 9th jayanagara": {
+    "lat": 12.9296075,
+    "lng": 77.5838365
+  },
+  "annapoorneshwari nagar naagarabhaavi": {
+    "lat": 12.979195,
+    "lng": 77.50676059999999
+  },
+  "nagondanahalli": {
+    "lat": 12.971241,
+    "lng": 77.7678875
+  },
+  "stage 1st domlur": {
+    "lat": 12.9714254,
+    "lng": 77.6456837
+  },
+  "kumaraswamy layout": {
+    "lat": 12.9044382,
+    "lng": 77.56492779999999
+  },
+  "ananth nagar": {
+    "lat": 12.8389444,
+    "lng": 77.6898209
+  },
+  "andrahalli main road": {
+    "lat": 13.015662,
+    "lng": 77.4841821
+  },
+  "infantry road": {
+    "lat": 12.981842,
+    "lng": 77.5998185
+  },
+  "nagadevanahalli kengeri satellite town 80ft ring rd": {
+    "lat": 12.9332599,
+    "lng": 77.491349
+  },
+  "dr ambedkar nagar yeshwantpur": {
+    "lat": 13.0196325,
+    "lng": 77.55406049999999
+  },
+  "block 2nd stage 6th banashankari": {
+    "lat": 12.9636819,
+    "lng": 77.5274275
+  },
+  "t dasarahalli": {
+    "lat": 13.0507542,
+    "lng": 77.5154276
+  },
+  "block 7 jayanagar": {
+    "lat": 12.9308107,
+    "lng": 77.58385770000001
+  },
+  "kathreguppe": {
+    "lat": 12.9293653,
+    "lng": 77.5569265
+  },
+  "whitefield": {
+    "lat": 12.9698196,
+    "lng": 77.7499721
+  },
+  "annapoorneshwari nagar": {
+    "lat": 12.979195,
+    "lng": 77.50676059999999
+  },
+  "kengeri satellite town": {
+    "lat": 12.9230523,
+    "lng": 77.4846519
+  },
+  "vidyapeeta layout": {
+    "lat": 12.9334382,
+    "lng": 77.56086719999999
+  },
+  "the arcade at brigade orchards": {
+    "lat": null,
+    "lng": null
+  },
+  "hemmigepura": {
+    "lat": 12.8859223,
+    "lng": 77.4902726
+  },
+  "kattigenahalli": {
+    "lat": 13.1215682,
+    "lng": 77.6207127
+  },
+  "lal bagh road": {
+    "lat": 12.9588387,
+    "lng": 77.5866793
+  },
+  "subramanyapura": {
+    "lat": 12.8988533,
+    "lng": 77.5439045
+  },
+  "dispensary road": {
+    "lat": 12.9817193,
+    "lng": 77.6080556
+  },
+  "hosakerehalli": {
+    "lat": 12.9221653,
+    "lng": 77.5362561
+  },
+  "indiranagar": {
+    "lat": 12.9783692,
+    "lng": 77.6408356
+  },
+  "majestic": {
+    "lat": 12.9774053,
+    "lng": 77.57423059999999
+  },
+  "ashirvad colony": {
+    "lat": 13.0274175,
+    "lng": 77.65884609999999
+  },
+  "phase 2 electronic city": {
+    "lat": 12.8468344,
+    "lng": 77.6809942
+  },
+  "annapurneshwari nagar": {
+    "lat": 12.9705504,
+    "lng": 77.4901138
+  },
+  "kalasipalya": {
+    "lat": 12.9594549,
+    "lng": 77.5805685
+  },
+  "aswath nagar marathahalli": {
+    "lat": 12.9587847,
+    "lng": 77.6999044
+  },
+  "babusapalya": {
+    "lat": 13.0228229,
+    "lng": 77.6520917
+  },
+  "cbi road": {
+    "lat": 13.0263369,
+    "lng": 77.5894471
+  },
+  "horamavu agara": {
+    "lat": 13.0411068,
+    "lng": 77.6622027
+  },
+  "koramangala": {
+    "lat": 12.9352403,
+    "lng": 77.624532
+  },
+  "bhattarahalli": {
+    "lat": 13.0175283,
+    "lng": 77.71076649999999
+  },
+  "kasthuriba nagar": {
+    "lat": 12.9548444,
+    "lng": 77.5508361
+  },
+  "nice": {
+    "lat": 12.8968951,
+    "lng": 77.516853
+  },
+  "shops": {
+    "lat": 13.0429056,
+    "lng": 77.5131504
+  },
+  "sri vasuki vallabha": {
+    "lat": 13.0084082,
+    "lng": 77.70069649999999
+  },
+  "thanisandra main road": {
+    "lat": 13.0708221,
+    "lng": 77.633614
+  },
+  "aratt alchemy elixir": {
+    "lat": 12.8259686,
+    "lng": 77.6545919
+  },
+  "richmond road": {
+    "lat": 12.9665998,
+    "lng": 77.6083946
+  },
+  "harlur main road": {
+    "lat": 12.9041501,
+    "lng": 77.6622042
+  },
+  "abhivrudhi gardens lane4": {
+    "lat": 13.0258224,
+    "lng": 77.7034819
+  },
+  "kamanahalli": {
+    "lat": 13.0159044,
+    "lng": 77.63786189999999
+  },
+  "holiday village road": {
+    "lat": 12.8709052,
+    "lng": 77.5426239
+  },
+  "block b aecs": {
+    "lat": 12.9655162,
+    "lng": 77.7168832
+  },
+  "viveka nagar": {
+    "lat": 12.9532457,
+    "lng": 77.6203572
+  },
+  "aecs a block": {
+    "lat": 12.9650892,
+    "lng": 77.71301509999999
+  },
+  "marathahalli": {
+    "lat": 12.956924,
+    "lng": 77.701127
+  },
+  "block 1st koramangala": {
+    "lat": 12.9352403,
+    "lng": 77.624532
+  },
+  "doddaballapura": {
+    "lat": null,
+    "lng": null
+  },
+  "brigade road": {
+    "lat": 12.9710429,
+    "lng": 77.6069032
+  },
+  "city market": {
+    "lat": 12.9647474,
+    "lng": 77.5768076
+  },
+  "sp road cross": {
+    "lat": 12.9655744,
+    "lng": 77.5793149
+  },
+  "sarjapura attibele road": {
+    "lat": 12.8489951,
+    "lng": 77.7823905
+  },
+  "mahalakshmi layout": {
+    "lat": 13.0145937,
+    "lng": 77.55140469999999
+  },
+  "bommanahalli": {
+    "lat": 12.9029804,
+    "lng": 77.6241936
+  },
+  "telecom layout": {
+    "lat": 13.0693308,
+    "lng": 77.6170964
+  },
+  "rahmath nagar": {
+    "lat": 13.0187462,
+    "lng": 77.5941783
+  },
+  "yeswanthpur": {
+    "lat": 13.0200209,
+    "lng": 77.5555743
+  },
+  "bovi colony ramamurthy nagar": {
+    "lat": 13.0124426,
+    "lng": 77.6761605
+  },
+  "shyamleela": {
+    "lat": 12.9628957,
+    "lng": 77.57754
+  },
+  "block 8 jaya nagar": {
+    "lat": 12.930515,
+    "lng": 77.5766
+  },
+  "madanayakahalli": {
+    "lat": 13.060978,
+    "lng": 77.46137449999999
+  },
+  "hal new thippasandra": {
+    "lat": 12.9705598,
+    "lng": 77.650033
+  },
+  "kottigepalya": {
+    "lat": 12.9856882,
+    "lng": 77.51167769999999
+  },
+  "mahalakshmipuram layout": {
+    "lat": 13.0145937,
+    "lng": 77.55140469999999
+  },
+  "block 2nd hbr layout": {
+    "lat": 13.0231203,
+    "lng": 77.652173
+  },
+  "ulsoor road": {
+    "lat": 12.97543,
+    "lng": 77.6174677
+  },
+  "gopal reddy layout annaiah reddy layout": {
+    "lat": 13.0170014,
+    "lng": 77.6570129
+  },
+  "rr nagar": {
+    "lat": 12.9148603,
+    "lng": 77.5206395
+  },
+  "gandhi nagar": {
+    "lat": 12.9791632,
+    "lng": 77.5771021
+  },
+  "nagarathpete": {
+    "lat": 12.9662107,
+    "lng": 77.581944
+  },
+  "stage 3rd banashankari": {
+    "lat": 12.9568593,
+    "lng": 77.5221014
+  },
+  "yelahanka": {
+    "lat": 13.1154662,
+    "lng": 77.6069977
+  },
+  "dasappa layout": {
+    "lat": 13.0138126,
+    "lng": 77.67045209999999
+  },
+  "chintamani": {
+    "lat": null,
+    "lng": null
+  },
+  "peenya": {
+    "lat": 13.0285133,
+    "lng": 77.5196763
+  },
+  "stage 6th banashankari": {
+    "lat": 12.9322212,
+    "lng": 77.5606487
+  },
+  "yelahanka new town": {
+    "lat": 13.1042262,
+    "lng": 77.57004909999999
+  },
+  "tumkur road": {
+    "lat": 13.035503,
+    "lng": 77.5265465
+  },
+  "mathikere": {
+    "lat": 13.0334194,
+    "lng": 77.56397609999999
+  },
+  "nellagadaranahalli": {
+    "lat": 13.0326702,
+    "lng": 77.5024596
+  },
+  "malleshwaram": {
+    "lat": 13.0055113,
+    "lng": 77.5692358
+  },
+  "stage 2nd btm layout": {
+    "lat": 12.909049,
+    "lng": 77.60763
+  },
+  "amrutahalli": {
+    "lat": 13.0658792,
+    "lng": 77.6042056
+  },
+  "bellandur": {
+    "lat": 12.9304278,
+    "lng": 77.678404
+  },
+  "vijayanagara": {
+    "lat": 12.9756183,
+    "lng": 77.5354055
+  },
+  "b channasandra": {
+    "lat": 13.0085242,
+    "lng": 77.66077109999999
+  },
+  "block 4th hbr layout": {
+    "lat": 13.0283483,
+    "lng": 77.6521745
+  },
+  "magadi main road": {
+    "lat": 12.9871512,
+    "lng": 77.519789
+  },
+  "kamakshipalya": {
+    "lat": 12.985524,
+    "lng": 77.52688309999999
+  },
+  "sbi colony jp nagar": {
+    "lat": 12.9104239,
+    "lng": 77.5741212
+  },
+  "adugodi": {
+    "lat": 12.9420036,
+    "lng": 77.6083044
+  },
+  "shivaji nagar": {
+    "lat": 12.9856503,
+    "lng": 77.60569269999999
+  },
+  "devasandra extension": {
+    "lat": 13.008307,
+    "lng": 77.6996783
+  },
+  "basavanagudi": {
+    "lat": 12.9405997,
+    "lng": 77.5737633
+  },
+  "basavanagara": {
+    "lat": 12.9670863,
+    "lng": 77.6808128
+  },
+  "hoysala nagar ramamurthy nagar": {
+    "lat": 13.017352,
+    "lng": 77.6653231
+  },
+  "jakkuru layout": {
+    "lat": 13.0711168,
+    "lng": 77.5998704
+  },
+  "vajarahalli": {
+    "lat": 12.8724102,
+    "lng": 77.5339067
+  },
+  "d' souza layout": {
+    "lat": 12.9707733,
+    "lng": 77.5956108
+  },
+  "phase 2nd jp nagar": {
+    "lat": 12.8750236,
+    "lng": 77.5873397
+  },
+  "sumadhura z hub": {
+    "lat": 12.9843277,
+    "lng": 77.7336893
+  },
+  "ittamadu padmanabhanagar": {
+    "lat": 12.9149867,
+    "lng": 77.5545167
+  },
+  "chickpet": {
+    "lat": 12.9709232,
+    "lng": 77.5763139
+  },
+  "chinmaya mission hospital road": {
+    "lat": 12.9783128,
+    "lng": 77.6375862
+  },
+  "bhuvaneshwari nagar banashankari": {
+    "lat": 12.9230669,
+    "lng": 77.5481835
+  },
+  "sultanpalya": {
+    "lat": 13.0274146,
+    "lng": 77.60427899999999
+  },
+  "lal bagh main road": {
+    "lat": 12.9588387,
+    "lng": 77.5866793
+  },
+  "gopasandra": {
+    "lat": 12.845136,
+    "lng": 77.7434537
+  },
+  "confident oxygen": {
+    "lat": 12.8779617,
+    "lng": 77.7622729
+  },
+  "manipal county road": {
+    "lat": 12.8759645,
+    "lng": 77.639708
+  },
+  "kaithota main road": {
+    "lat": 12.9698764,
+    "lng": 77.7715052
+  },
+  "binnamangala stage 1 indiranagar": {
+    "lat": 12.9809038,
+    "lng": 77.6398129
+  },
+  "bagalur main road": {
+    "lat": 13.1215816,
+    "lng": 77.6214671
+  },
+  "stage 1 indiranagar": {
+    "lat": 12.9799703,
+    "lng": 77.6400098
+  },
+  "ramamurthy": {
+    "lat": 13.0084887,
+    "lng": 77.6737028
+  },
+  "vijayanagar": {
+    "lat": 12.9756183,
+    "lng": 77.5354055
+  },
+  "aecs layout marathahalli": {
+    "lat": 12.9631691,
+    "lng": 77.71327169999999
+  },
+  "chamrajpet": {
+    "lat": 12.9569869,
+    "lng": 77.5621397
+  },
+  "msr nagar": {
+    "lat": 13.0384214,
+    "lng": 77.56265839999999
+  },
+  "kanakapura road": {
+    "lat": 12.8897387,
+    "lng": 77.5634099
+  },
+  "block 1st jayanagar": {
+    "lat": 12.982958,
+    "lng": 77.55478289999999
+  },
+  "coles road": {
+    "lat": 12.9965108,
+    "lng": 77.6122042
+  },
+  "rashtriya vidyalaya road": {
+    "lat": 12.9363783,
+    "lng": 77.5800428
+  },
+  "ayyappa nagar krishnarajapura": {
+    "lat": 13.0024112,
+    "lng": 77.71247199999999
+  },
+  "sudhama nagar": {
+    "lat": 12.9591636,
+    "lng": 77.5868218
+  },
+  "nagdevanahalli": {
+    "lat": 12.9392358,
+    "lng": 77.4901623
+  },
+  "ramamurthy nagar": {
+    "lat": 13.0163134,
+    "lng": 77.6784812
+  },
+  "kudlu rd": {
+    "lat": 12.8899738,
+    "lng": 77.6482471
+  },
+  "hoskote": {
+    "lat": null,
+    "lng": null
+  },
+  "kalasipalyam new extension": {
+    "lat": 12.9609037,
+    "lng": 77.58033
+  },
+  "naagarabhaavi": {
+    "lat": 12.9719321,
+    "lng": 77.512749
+  },
+  "kpc layout kasavanahalli": {
+    "lat": 12.9066841,
+    "lng": 77.6757011
+  },
+  "khbs layout": {
+    "lat": 12.9990179,
+    "lng": 77.5368628
+  },
+  "rpc layout": {
+    "lat": 12.9633004,
+    "lng": 77.5378018
+  },
+  "sst z-hub sumadhura": {
+    "lat": 12.9843277,
+    "lng": 77.7336893
+  },
+  "kachohalli": {
+    "lat": 13.0000525,
+    "lng": 77.4709142
+  },
+  "hal": {
+    "lat": 12.9552401,
+    "lng": 77.66464599999999
+  },
+  "block 5th koramangala": {
+    "lat": 12.9352156,
+    "lng": 77.6199608
+  },
+  "gandhi bazaar": {
+    "lat": 12.9454492,
+    "lng": 77.5713234
+  },
+  "banaswadi": {
+    "lat": 13.0103761,
+    "lng": 77.6481944
+  },
+  "gottigere main road": {
+    "lat": 12.8667344,
+    "lng": 77.5778133
+  },
+  "konanakunte": {
+    "lat": 12.8822193,
+    "lng": 77.5659682
+  },
+  "global golden enclave phase iil": {
+    "lat": 13.0680607,
+    "lng": 77.4952505
+  },
+  "rajajinagar": {
+    "lat": 12.9981732,
+    "lng": 77.55304459999999
+  },
+  "hegganahalli": {
+    "lat": 13.0064241,
+    "lng": 77.51711569999999
+  },
+  "4th t block east jayanagar": {
+    "lat": 12.9254199,
+    "lng": 77.59184900000001
+  },
+  "nehru road": {
+    "lat": 13.0145096,
+    "lng": 77.6357908
+  },
+  "sunkadakatte": {
+    "lat": 12.9918405,
+    "lng": 77.50464749999999
+  },
+  "3rd block rajajinagar": {
+    "lat": 12.9875116,
+    "lng": 77.5543237
+  },
+  "gokula extension": {
+    "lat": 13.0424522,
+    "lng": 77.55705859999999
+  },
+  "hebbal kempapura": {
+    "lat": 13.0529125,
+    "lng": 77.60148590000001
+  },
+  "mc layout": {
+    "lat": 12.9753753,
+    "lng": 77.542187
+  },
+  "avalahalli": {
+    "lat": 12.9456895,
+    "lng": 77.54402879999999
+  },
+  "stage 2nd rajajinagar": {
+    "lat": 13.0452696,
+    "lng": 77.5709947
+  },
+  "gottigere": {
+    "lat": 12.856443,
+    "lng": 77.58884479999999
+  },
+  "mallathahalli": {
+    "lat": 12.9619761,
+    "lng": 77.49796529999999
+  },
+  "maruthi sevanagar": {
+    "lat": 13.0013782,
+    "lng": 77.6298047
+  },
+  "anagalapura": {
+    "lat": 13.0696952,
+    "lng": 77.680679
+  },
+  "nagasandra": {
+    "lat": 13.039457,
+    "lng": 77.5000183
+  },
+  "block 5th jayanagar": {
+    "lat": 12.9352156,
+    "lng": 77.6199608
+  },
+  "jayanagar": {
+    "lat": 12.9308107,
+    "lng": 77.58385770000001
+  },
+  "nallurhalli": {
+    "lat": 12.9704803,
+    "lng": 77.73291309999999
+  },
+  "hulimavu": {
+    "lat": 12.8718155,
+    "lng": 77.6021817
+  },
+  "defence layout sahakar nagar": {
+    "lat": 13.060597,
+    "lng": 77.5827175
+  },
+  "kaval bairasandra": {
+    "lat": 13.0236542,
+    "lng": 77.60804569999999
+  },
+  "dr vivekananda layout": {
+    "lat": 12.8857009,
+    "lng": 77.583664
+  },
+  "arya hub mall": {
+    "lat": 12.9833903,
+    "lng": 77.7519788
+  },
+  "commercial street": {
+    "lat": 12.982236,
+    "lng": 77.608373
+  },
+  "benson town": {
+    "lat": 13.004681,
+    "lng": 77.59994429999999
+  },
+  "nelamangala town": {
+    "lat": 13.097301,
+    "lng": 77.38563979999999
+  },
+  "neeladri nagar": {
+    "lat": 12.8390936,
+    "lng": 77.6471693
+  },
+  "sriraampura main road": {
+    "lat": 13.0551707,
+    "lng": 77.6024609
+  },
+  "banashankari": {
+    "lat": 12.925483,
+    "lng": 77.5500071
+  },
+  "kudlu gate": {
+    "lat": 12.890984,
+    "lng": 77.6400098
+  },
+  "new bel road": {
+    "lat": 13.0302328,
+    "lng": 77.570572
+  },
+  "devarachiknahalli": {
+    "lat": 12.8919741,
+    "lng": 77.6179588
+  },
+  "dr bendre layout": {
+    "lat": 13.0684295,
+    "lng": 77.649675
+  },
+  "thambu chetty palya": {
+    "lat": 13.0190631,
+    "lng": 77.7037131
+  },
+  "nti layout rajiv gandhi nagar": {
+    "lat": 13.0722849,
+    "lng": 77.5858638
+  },
+  "herohalli sunkadakatte": {
+    "lat": 12.9896594,
+    "lng": 77.4895557
+  },
+  "attibele": {
+    "lat": 12.778963,
+    "lng": 77.7702029
+  },
+  "nri layout": {
+    "lat": 13.0334962,
+    "lng": 77.679375
+  },
+  "kenchenhalli": {
+    "lat": 12.93058,
+    "lng": 77.508911
+  },
+  "rukmini nagar": {
+    "lat": 13.0457105,
+    "lng": 77.4945741
+  },
+  "block 4th jayanagar": {
+    "lat": 12.9338752,
+    "lng": 77.6301732
+  },
+  "jayamahal": {
+    "lat": 12.9998698,
+    "lng": 77.5950525
+  },
+  "lakshman mudaliar st. locality": {
+    "lat": 12.939265,
+    "lng": 77.5727582
+  },
+  "j p nagar": {
+    "lat": 12.9063433,
+    "lng": 77.5856825
+  },
+  "hesaraghatta": {
+    "lat": 13.133999,
+    "lng": 77.4788014
+  },
+  "phase 8th jp nagar": {
+    "lat": 12.9063433,
+    "lng": 77.5856825
+  },
+  "nagarabhavi main road": {
+    "lat": 12.9677489,
+    "lng": 77.5239576
+  },
+  "ganga nagar extension": {
+    "lat": 13.0198136,
+    "lng": 77.58701549999999
+  },
+  "kalyan nagar": {
+    "lat": 13.0239923,
+    "lng": 77.643294
+  },
+  "miraya rose by ukn": {
+    "lat": 12.956906,
+    "lng": 77.7321949
+  },
+  "prestige meridian": {
+    "lat": 12.9735545,
+    "lng": 77.6125285
+  },
+  "sector 2 hsr layout": {
+    "lat": 12.925317,
+    "lng": 77.6166666
+  },
+  "bk nagar main road": {
+    "lat": 13.0278556,
+    "lng": 77.5535838
+  },
+  "pulikeshi nagar": {
+    "lat": 12.9968949,
+    "lng": 77.609935
+  },
+  "bommasandra jigani link road": {
+    "lat": 12.8013851,
+    "lng": 77.6619281
+  }
+}
