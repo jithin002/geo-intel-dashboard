@@ -226,3 +226,67 @@ export function calculateDomainScores(
         total: totalScore || 0,
     };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Async Web Worker wrapper
+// Offloads heavy scoring math to a background thread so the React UI
+// never drops frames, even on dense areas like Indiranagar.
+// Falls back to the synchronous version if Workers are unavailable.
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _workerInstance: Worker | null = null;
+let _pendingRequests = new Map<string, {
+    resolve: (v: CalculatedScores) => void;
+    reject: (e: Error) => void;
+}>();
+
+function getScoringWorker(): Worker | null {
+    if (_workerInstance) return _workerInstance;
+    try {
+        const worker = new Worker(new URL('./scoring.worker.ts', import.meta.url), { type: 'module' });
+        worker.onmessage = (e: MessageEvent) => {
+            const { requestId, scores, error } = e.data;
+            const pending = _pendingRequests.get(requestId);
+            if (!pending) return;
+            _pendingRequests.delete(requestId);
+            if (error) {
+                pending.reject(new Error(error));
+            } else {
+                pending.resolve(scores);
+            }
+        };
+        worker.onerror = (e) => {
+            console.error('Scoring worker error:', e);
+            // Reject all pending on crash
+            _pendingRequests.forEach(p => p.reject(new Error('Worker crashed')));
+            _pendingRequests.clear();
+            _workerInstance = null;
+        };
+        _workerInstance = worker;
+        return worker;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Async version of calculateDomainScores.
+ * Uses a Web Worker when available; falls back to synchronous on older browsers.
+ */
+export async function calculateDomainScoresAsync(
+    intel: DomainLocationIntelligence | LocationIntelligence,
+    domainId: DomainId,
+    searchRadiusMeters: number
+): Promise<CalculatedScores> {
+    const worker = getScoringWorker();
+    if (!worker) {
+        // Fallback: run synchronously (no Worker support)
+        return calculateDomainScores(intel, domainId, searchRadiusMeters);
+    }
+
+    const requestId = Math.random().toString(36).slice(2);
+    return new Promise<CalculatedScores>((resolve, reject) => {
+        _pendingRequests.set(requestId, { resolve, reject });
+        worker.postMessage({ intel, domainId, searchRadiusMeters, requestId });
+    });
+}

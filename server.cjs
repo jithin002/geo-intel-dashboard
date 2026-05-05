@@ -80,6 +80,42 @@ app.get('/api/rent-insights', async (req, res) => {
   }
 });
 
+// ── /api/rent-listings — individual rows for map pin rendering ──────────────
+app.get('/api/rent-listings', async (req, res) => {
+  try {
+    const { lat, lng, radius = 5000, domain = 'Retail' } = req.query;
+    if (!lat || !lng) return res.status(400).json({ error: 'Missing lat or lng' });
+
+    const latitude  = parseFloat(lat);
+    const longitude = parseFloat(lng);
+    const searchRadius = parseFloat(radius);
+
+    const query = `
+      SELECT
+        listing_id, title, locality, domain_type,
+        monthly_rent, area_sqft, price_per_sqft, listing_url,
+        ST_Y(geo_point) AS lat,
+        ST_X(geo_point) AS lng
+      FROM \`testing-jithin.geo_intel.commercial_rent_listings\`
+      WHERE ST_DWithin(geo_point, ST_GEOGPOINT(@lng, @lat), @radius)
+        AND domain_type = @domain
+        AND geo_point IS NOT NULL
+      ORDER BY price_per_sqft ASC
+      LIMIT 20
+    `;
+
+    const [rows] = await bigquery.query({
+      query,
+      params: { lat: latitude, lng: longitude, radius: searchRadius, domain }
+    });
+
+    res.json(rows || []);
+  } catch (error) {
+    console.error('Error fetching rent listings:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 app.listen(port, () => {
   console.log(`Rent Intelligence API running on http://localhost:${port}`);
 });

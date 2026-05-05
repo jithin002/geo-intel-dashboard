@@ -63,6 +63,12 @@ When a location is selected, the system:
 3. **Calculates Score**: Applies the domain's weighting matrix to evaluate opportunity and saturation.
 4. **Generates AI Strategy**: Gemini synthesizes the physical API data into a readable market strategy.
 
+### Two-Tier Caching Strategy
+To optimize Google Places API usage and reduce costs, the application employs a two-tier caching mechanism in `placesAPIService.ts`:
+1. **In-Memory Map**: A fast, temporary cache using an ES6 `Map` that stores results for the lifetime of the browser session. Perfect for preventing redundant network calls when users quickly toggle between adjacent wards or domains.
+2. **Session Storage**: A persistent secondary cache using `sessionStorage`. This ensures that even if the user reloads the page, previously fetched location intelligence (competitors, demand generators) within the same session is instantly recovered without hitting the Places API billing endpoints.
+Cache keys are deterministically generated based on latitude, longitude (rounded to 3 decimals to cluster micro-movements), search radius, and domain type.
+
 ### Sample Output
 ```text
 SITE VIABILITY: 87/100 (GOLD MINE)
