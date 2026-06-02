@@ -91,7 +91,6 @@ export const IntelligencePanel: React.FC<IntelligencePanelProps> = ({
     addCustomParam, removeCustomParam,
     selectedPos, rentInsights, rentLoading,
 }) => {
-    const [rentAreaSqft, setRentAreaSqft] = useState<number>(1000);
     const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
 
     const getVerdict = () => {
@@ -321,42 +320,21 @@ export const IntelligencePanel: React.FC<IntelligencePanelProps> = ({
                         )}
                         {selectedPos && !rentLoading && rentInsights && rentInsights.sample_size > 0 && (
                             <>
-                                {/* Dense Estimator */}
-                                <div className="bg-slate-50 rounded-xl p-2.5 border border-slate-100">
-                                    <div className="flex justify-between items-center mb-2">
-                                        <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Budget Estimator</div>
-                                        <div className="flex gap-1">
-                                            {[300, 500, 1000].map(sq => (
-                                                <button
-                                                    key={sq}
-                                                    onClick={() => setRentAreaSqft(sq)}
-                                                    className={`px-1.5 py-0.5 text-[8px] font-bold rounded ${rentAreaSqft === sq ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-600 hover:bg-slate-300'}`}
-                                                >
-                                                    {sq}
-                                                </button>
-                                            ))}
-                                        </div>
+                                {/* Avg Rate — prominent display */}
+                                <div className="bg-gradient-to-br from-emerald-50 to-teal-50 rounded-xl p-3 border border-emerald-100 text-center">
+                                    <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Avg. Market Rate</div>
+                                    <div className="text-3xl font-black text-emerald-600 leading-none">
+                                        ₹{Math.round(rentInsights.avg_rent)}
                                     </div>
-                                    <div className="flex items-end justify-between">
-                                        <div>
-                                            <div className="text-[9px] text-slate-500 font-bold">Total Cost</div>
-                                            <div className="text-lg font-black text-emerald-600 leading-none">
-                                                ₹{((rentInsights.avg_rent * rentAreaSqft) / 1000).toFixed(1)}k
-                                                <span className="text-[10px] text-slate-400 font-medium ml-1">/mo</span>
-                                            </div>
-                                        </div>
-                                        <div className="text-right">
-                                            <div className="text-[9px] text-slate-500 font-bold">Rate</div>
-                                            <div className="text-[11px] font-black text-slate-700">₹{Math.round(rentInsights.avg_rent)}/sqft</div>
-                                        </div>
-                                    </div>
+                                    <div className="text-[9px] text-slate-400 font-medium mt-0.5">per sqft / month</div>
                                 </div>
 
-                                {/* Affordability Badge & Dense Stats */}
+                                {/* Min / Max / Badge row */}
                                 <div className="flex items-center justify-between px-1">
-                                    <div className="flex gap-2 text-[9px] font-bold">
-                                        <span className="text-emerald-600">Min: ₹{Math.round(rentInsights.min_rent)}</span>
-                                        <span className="text-red-500">Max: ₹{Math.round(rentInsights.max_rent)}</span>
+                                    <div className="flex gap-3 text-[9px] font-bold">
+                                        <span className="text-emerald-600">Min ₹{Math.round(rentInsights.min_rent)}</span>
+                                        <span className="text-slate-300">|</span>
+                                        <span className="text-red-500">Max ₹{Math.round(rentInsights.max_rent)}</span>
                                     </div>
                                     <div className={`px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-widest ${
                                         rentInsights.avg_rent < 100 ? 'bg-emerald-100 text-emerald-700' :
@@ -365,6 +343,7 @@ export const IntelligencePanel: React.FC<IntelligencePanelProps> = ({
                                         {rentInsights.avg_rent < 100 ? 'Affordable' : rentInsights.avg_rent > 200 ? 'Premium' : 'Moderate'}
                                     </div>
                                 </div>
+                                <p className="text-[8px] text-slate-300 text-center">{rentInsights.sample_size} listings · 5km radius</p>
                             </>
                         )}
                     </div>

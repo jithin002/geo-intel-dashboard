@@ -111,7 +111,7 @@ export const DashboardMap: React.FC<DashboardMapProps> = ({
                 <MapRevalidator />
                 <MapZoomController center={selectedPos} zoom={mapZoom} navigateKey={mapNavigateKey} />
 
-                {/* Catchment circle */}
+                {/* Catchment circle — primary zone */}
                 {selectedPos && (
                     <Circle
                         center={selectedPos}
@@ -122,6 +122,21 @@ export const DashboardMap: React.FC<DashboardMapProps> = ({
                             fillOpacity: 0.08,
                             dashArray: '8, 8',
                             weight: 2
+                        }}
+                    />
+                )}
+
+                {/* Rent analysis zone — wider 5km area used for market rate data */}
+                {selectedPos && rentListings.length > 0 && (
+                    <Circle
+                        center={selectedPos}
+                        radius={Math.max(searchRadius * 3, 5000)}
+                        pathOptions={{
+                            color: '#059669',
+                            fillColor: '#10b981',
+                            fillOpacity: 0.07,
+                            dashArray: '10, 8',
+                            weight: 2.5
                         }}
                     />
                 )}
@@ -409,50 +424,76 @@ export const DashboardMap: React.FC<DashboardMapProps> = ({
                             );
                         });
                 })}
-                {/* ── Rent Listing Pins (emerald teardrop) ─────────────────── */}
-                {rentListings.map((listing, idx) => (
-                    <Marker
-                        key={`rent-${listing.listing_id || idx}`}
-                        position={[listing.lat, listing.lng]}
-                        icon={rentListingIcon}
-                    >
-                        <Popup maxWidth={220}>
-                            <div className="p-2 min-w-[200px]">
-                                {/* Header */}
-                                <div className="font-black text-slate-800 text-sm mb-1 leading-tight">
-                                    🏢 {listing.title || 'Commercial Space'}
-                                </div>
-                                {listing.locality && (
-                                    <div className="text-[9px] text-slate-400 font-medium mb-2">{listing.locality}</div>
-                                )}
-                                {/* Price row */}
-                                <div className="flex items-center justify-between bg-emerald-50 rounded-lg px-2 py-1.5 mb-2">
-                                    <span className="text-[9px] font-bold text-emerald-700 uppercase tracking-wide">₹/sqft</span>
-                                    <span className="text-base font-black text-emerald-600">₹{Math.round(listing.price_per_sqft)}</span>
-                                </div>
-                                {/* Details */}
-                                <div className="flex justify-between text-[9px] text-slate-500 font-medium mb-2">
-                                    <span>Area: {listing.area_sqft ? `${Math.round(listing.area_sqft)} sqft` : '—'}</span>
-                                    <span>Total: ₹{listing.monthly_rent ? `${(listing.monthly_rent / 1000).toFixed(0)}k/mo` : '—'}</span>
-                                </div>
-                                {/* Badge + Link */}
-                                <div className="flex items-center justify-between">
-                                    <span className="text-[9px] font-bold text-white px-2 py-0.5 rounded-full uppercase tracking-widest bg-emerald-500">FOR RENT</span>
-                                    {listing.listing_url && (
-                                        <a
-                                            href={listing.listing_url}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                            className="text-[9px] font-black text-indigo-600 hover:text-indigo-800 hover:underline transition-colors"
-                                        >
-                                            View ↗
-                                        </a>
+                {/* ── Rent Listing Pins (distance-aware opacity) ─────────────── */}
+                {rentListings.map((listing, idx) => {
+                    // Determine if listing is inside the primary catchment radius
+                    let isInsideRadius = false;
+                    if (selectedPos) {
+                        const R = 6371000;
+                        const rad = Math.PI / 180;
+                        const dLat = (listing.lat - selectedPos[0]) * rad;
+                        const dLon = (listing.lng - selectedPos[1]) * rad;
+                        const a = Math.sin(dLat / 2) ** 2 +
+                            Math.cos(selectedPos[0] * rad) * Math.cos(listing.lat * rad) * Math.sin(dLon / 2) ** 2;
+                        const dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+                        isInsideRadius = dist <= searchRadius;
+                    }
+
+                    // Vibrant pin inside zone, softer-but-visible outside zone
+                    const pinOpacity = 1;
+                    const pinColor = isInsideRadius ? '#065f46' : '#6ee7b7';
+                    const dynamicIcon = L.divIcon({
+                        className: '',
+                        html: `<div style="opacity:${pinOpacity};width:30px;height:38px;display:flex;align-items:flex-start;justify-content:center;">
+                            <svg viewBox="0 0 30 38" width="30" height="38" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M15 0C6.716 0 0 6.716 0 15c0 8.284 15 23 15 23S30 23.284 30 15C30 6.716 23.284 0 15 0z"
+                                    fill="${pinColor}" stroke="#fff" stroke-width="1.5"/>
+                                <text x="15" y="20" text-anchor="middle" font-size="13" fill="#fff">🏢</text>
+                            </svg>
+                        </div>`,
+                        iconSize: [30, 38],
+                        iconAnchor: [15, 38],
+                        popupAnchor: [0, -38],
+                    });
+
+                    return (
+                        <Marker
+                            key={`rent-${listing.listing_id || idx}`}
+                            position={[listing.lat, listing.lng]}
+                            icon={dynamicIcon}
+                        >
+                            <Popup maxWidth={220}>
+                                <div className="p-2 min-w-[200px]">
+                                    <div className="font-black text-slate-800 text-sm mb-1 leading-tight">
+                                        🏢 {listing.title || 'Commercial Space'}
+                                    </div>
+                                    {listing.locality && (
+                                        <div className="text-[9px] text-slate-400 font-medium mb-2">{listing.locality}</div>
                                     )}
+                                    <div className="flex items-center justify-between bg-emerald-50 rounded-lg px-2 py-1.5 mb-2">
+                                        <span className="text-[9px] font-bold text-emerald-700 uppercase tracking-wide">₹/sqft</span>
+                                        <span className="text-base font-black text-emerald-600">₹{Math.round(listing.price_per_sqft)}</span>
+                                    </div>
+                                    <div className="flex justify-between text-[9px] text-slate-500 font-medium mb-2">
+                                        <span>Area: {listing.area_sqft ? `${Math.round(listing.area_sqft)} sqft` : '—'}</span>
+                                        <span>Total: ₹{listing.monthly_rent ? `${(listing.monthly_rent / 1000).toFixed(0)}k/mo` : '—'}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                        <span className={`text-[9px] font-bold text-white px-2 py-0.5 rounded-full uppercase tracking-widest ${isInsideRadius ? 'bg-emerald-500' : 'bg-slate-400'}`}>
+                                            {isInsideRadius ? 'FOR RENT' : 'NEARBY'}
+                                        </span>
+                                        {listing.listing_url && (
+                                            <a href={listing.listing_url} target="_blank" rel="noreferrer"
+                                                className="text-[9px] font-black text-indigo-600 hover:text-indigo-800 hover:underline transition-colors">
+                                                View ↗
+                                            </a>
+                                        )}
+                                    </div>
                                 </div>
-                            </div>
-                        </Popup>
-                    </Marker>
-                ))}
+                            </Popup>
+                        </Marker>
+                    );
+                })}
             </MapContainer>
 
             {/* Map Legend */}

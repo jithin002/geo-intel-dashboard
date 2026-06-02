@@ -1,0 +1,19 @@
+{
+  "name": "geo-intel-agent",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "agent.ts",
+  "scripts": {
+    "dev": "npx adk web",
+    "run-agent": "npx adk run agent.ts"
+  },
+  "dependencies": {
+    "@google/adk": "latest",
+    "dotenv": "^16.0.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@google/adk-devtools": "latest",
+    "typescript": "~5.8.2"
+  }
+}

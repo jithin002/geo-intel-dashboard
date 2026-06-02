@@ -116,6 +116,139 @@ app.get('/api/rent-listings', async (req, res) => {
   }
 });
 
+// ── /api/chat — Geo-Intel ADK Agent proxy ────────────────────────────────────
+//
+// Architecture:
+//   React frontend  →  POST /api/chat  →  server.cjs  →  ADK agent (port 8000)
+//
+// Request body:  { message: string, sessionId?: string, userId?: string }
+// Response:      { text: string, sessionId: string }
+//
+// sessionId is returned on every response and should be passed back on the
+// next request to maintain full conversation context across turns.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ADK_URL      = 'http://localhost:8000';
+const ADK_APP      = 'agent';          // matches the filename: geo-intel-agent/agent.ts
+const ADK_AGENT    = 'geo_intel_agent'; // matches name: in LlmAgent({name: ...})
+const DEFAULT_USER = 'geo-intel-user';
+
+app.post('/api/chat', async (req, res) => {
+  const { message, sessionId, userId = DEFAULT_USER } = req.body;
+
+  if (!message || typeof message !== 'string' || !message.trim()) {
+    return res.status(400).json({ error: 'message is required' });
+  }
+
+  try {
+    // ── Step 1: Resolve session ──────────────────────────────────────────────
+    // If no sessionId was passed, create a new ADK session.
+    let activeSessionId = sessionId;
+
+    if (!activeSessionId) {
+      const sessionRes = await fetch(
+        `${ADK_URL}/apps/${ADK_APP}/users/${encodeURIComponent(userId)}/sessions`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        }
+      );
+
+      if (!sessionRes.ok) {
+        const err = await sessionRes.text();
+        console.error('ADK session creation failed:', err);
+        return res.status(502).json({
+          error: 'Could not create agent session. Make sure the ADK server is running on port 8000.',
+        });
+      }
+
+      const sessionData = await sessionRes.json();
+      activeSessionId = sessionData.id || sessionData.session_id || sessionData.sessionId;
+      console.log(`[ADK] Session response:`, JSON.stringify(sessionData));
+      console.log(`[ADK] New session created: ${activeSessionId}`);
+    }
+
+    // ── Step 2: Send message to ADK via /run_sse ─────────────────────────────
+    const runRes = await fetch(`${ADK_URL}/run_sse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        appName:    ADK_APP,
+        userId:     userId,
+        sessionId:  activeSessionId,
+        newMessage: {
+          role:  'user',
+          parts: [{ text: message.trim() }],
+        },
+      }),
+    });
+
+    if (!runRes.ok) {
+      const err = await runRes.text();
+      console.error('ADK /run_sse error:', runRes.status, err);
+      return res.status(502).json({
+        error: 'Agent returned an error. Please try again.',
+      });
+    }
+
+    // ── Step 3: Parse SSE stream → extract agent text + tool data ────────────
+    // /run_sse returns a stream of "data: <json>\n\n" lines.
+    // Events of interest:
+    //   author === ADK_AGENT          → final text response
+    //   author === 'analyze_location' → tool result with coordinates + scores
+    //   author === 'compare_locations'→ tool result with two-location comparison
+    const rawText = await runRes.text();
+    const lines   = rawText.split('\n');
+    let agentText = '';
+    let toolData  = null;
+
+    const TOOL_NAMES = new Set(['analyze_location', 'compare_locations', 'search_nearby']);
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const event = JSON.parse(line.slice(6));
+
+        // Final agent prose response
+        if (event.author === ADK_AGENT && event.content?.parts?.[0]?.text) {
+          agentText = event.content.parts[0].text;
+        }
+
+        // Tool response — identified by functionResponse part (author is still geo_intel_agent)
+        if (event.author === ADK_AGENT) {
+          for (const part of (event.content?.parts || [])) {
+            const fr = part?.functionResponse;
+            if (fr && TOOL_NAMES.has(fr.name)) {
+              // ADK wraps return value in fr.response.output
+              const output = fr.response?.output ?? fr.response;
+              if (output?.status === 'success') {
+                toolData = output;
+              }
+            }
+          }
+        }
+      } catch {
+        // malformed SSE line — skip
+      }
+    }
+
+    console.log(`[ADK] Session ${activeSessionId} → text: ${agentText.length} chars | toolData: ${toolData ? JSON.stringify(toolData).slice(0, 80) : 'none'}`);
+
+    return res.json({
+      text:      agentText || 'No response received from the agent.',
+      sessionId: activeSessionId,
+      toolData,  // coordinates, scores, comparison winner — used by frontend for map nav
+    });
+
+  } catch (error) {
+    console.error('[ADK] Proxy error:', error);
+    return res.status(502).json({
+      error: 'Failed to reach the Geo-Intel agent. Make sure the ADK server is running on port 8000.',
+    });
+  }
+});
+
 app.listen(port, () => {
   console.log(`Rent Intelligence API running on http://localhost:${port}`);
 });

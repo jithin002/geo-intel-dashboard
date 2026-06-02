@@ -20,7 +20,7 @@ import {
     getRecentContext,
     Message
 } from './services/conversationService';
-import { processUserQuery } from './services/chatOrchestrationService';
+import { processUserQueryADK as processUserQuery, resetADKSession } from './services/adkChatService';
 import { useAuth } from './context/AuthContext';
 import { LoginPage } from './components/LoginPage';
 import { getRentInsights, getRentListings, RentInsights, RentListing } from './services/rentIntelligenceService';
@@ -609,6 +609,7 @@ const App: React.FC<{
     const handleClearChat = useCallback(() => {
         clearConversationHistory();
         setConversationMessages([]);
+        resetADKSession(); // start a fresh ADK conversation
     }, []);
 
     const [showRightSidebar, setShowRightSidebar] = useState(true);
