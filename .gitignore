@@ -14,3 +14,7 @@ yarn-error.log*
 
 # Ignore service accounts
 service-account.json
+
+# ADK sub-project — lock file is not needed in the main repo
+geo-intel-agent/package-lock.json
+geo-intel-agent/node_modules/
