@@ -160,7 +160,7 @@ async function nearbySearch(
       circle: { center: { latitude: lat, longitude: lng }, radius: radiusMeters },
     },
     maxResultCount: 20,
-    rankPreference: 'DISTANCE',
+    rankPreference: 'POPULARITY',
   };
 
   try {
@@ -222,7 +222,9 @@ async function fetchLocationIntel(
   );
 
   return {
-    competitors: competitors.filter((p: any) => (p.rating || 0) >= 3.5 || (p.userRatingCount || 0) >= 5),
+    competitors: domain === 'gym' 
+      ? competitors.filter((p: any) => (p.rating || 0) >= 3.5 || (p.userRatingCount || 0) >= 5)
+      : competitors,
     corporates: filteredCorp,
     cafes,
     transit,
@@ -326,7 +328,10 @@ const analyzeLocation = new FunctionTool({
   description:
     'Performs a full location intelligence analysis for a named area in Bangalore. ' +
     'Returns competitor count, demand drivers, transit access, site score, and a strategic recommendation. ' +
-    'Use this when the user asks about a specific area or wants to know if a location is good for their business.',
+    'Use this when the user asks about a specific area, wants to know if a location is good for their business, ' +
+    'or when answering questions about specific attributes of a location (e.g. "nearest premium gym", "least competitive cafe area"). ' +
+    'Only supports these domains: gym, restaurant, cafe, retail, bank, coworking. ' +
+    'If the user asks for an unsupported domain, still call this tool — it will return a graceful message.',
   parameters: z.object({
     location: z.string().describe(
       'Name of the Bangalore area or landmark to analyze (e.g. "Koramangala", "Indiranagar", "Forum Mall HSR").'
@@ -344,6 +349,18 @@ const analyzeLocation = new FunctionTool({
   execute: async ({ location, domain, radius_meters }) => {
     const radius = radius_meters || 1000;
 
+    // Guard: unsupported domain — inform the user, skip map analysis
+    if (!DOMAIN_TYPES[domain]) {
+      return {
+        status: 'not_mapped',
+        domain,
+        message:
+          `The "${domain}" domain is not currently supported for map-based analysis. ` +
+          `Supported domains are: gym, restaurant, cafe, retail, bank, and co-working spaces. ` +
+          `I can still share general location advice for "${domain}" businesses in ${location} based on my knowledge.`,
+      };
+    }
+
     // Geocode the location
     const coords = await geocodeLocation(location);
     if (!coords) {
@@ -357,7 +374,7 @@ const analyzeLocation = new FunctionTool({
     if (!isInsideBangalore(lat, lng)) {
       return {
         status: 'error',
-        message: `"${location}" appears to be outside Bangalore's boundaries. I'm exclusively focused on analyzing locations within Bangalore city limits.`,
+        message: `"${location}" appears to be outside Bangalore's boundaries. I am exclusively focused on analyzing locations within Bangalore city limits.`,
       };
     }
 
@@ -396,7 +413,8 @@ const compareLocations = new FunctionTool({
   description:
     'Compares two Bangalore areas side-by-side for a specific business domain. ' +
     'Returns scores, key metrics, and a clear winner recommendation. ' +
-    'Use this when the user asks "which is better", "compare X vs Y", or "X or Y for my business".',
+    'Use this when the user asks "which is better", "compare X vs Y", or "X or Y for my business". ' +
+    'Only supports: gym, restaurant, cafe, retail, bank, coworking.',
   parameters: z.object({
     location1: z.string().describe('First Bangalore area to compare.'),
     location2: z.string().describe('Second Bangalore area to compare.'),
@@ -408,6 +426,17 @@ const compareLocations = new FunctionTool({
   }),
   execute: async ({ location1, location2, domain, radius_meters }) => {
     const radius = radius_meters || 1000;
+
+    // Guard: unsupported domain
+    if (!DOMAIN_TYPES[domain]) {
+      return {
+        status: 'not_mapped',
+        domain,
+        message:
+          `The "${domain}" domain is not supported for map-based comparison. ` +
+          `Supported domains are: gym, restaurant, cafe, retail, bank, and co-working spaces.`,
+      };
+    }
 
     // Geocode both in parallel
     const [coords1, coords2] = await Promise.all([
@@ -545,33 +574,35 @@ export const rootAgent = new LlmAgent({
   model: 'gemini-2.5-flash',
   description:
     'Geo-Intel Assistant — analyzes optimal business locations in Bangalore, India using real-time Places API data.',
-  instruction: `You are the Geo-Intel Assistant, a professional location intelligence advisor helping entrepreneurs, investors, and analysts identify optimal business locations in Bangalore, India.
+  instruction: `You are the Geo-Intel Assistant — a professional location intelligence advisor for Bangalore, India. You help entrepreneurs, investors, and analysts identify optimal business locations.
 
-IDENTITY RULES:
-- You specialise exclusively in Bangalore location intelligence. Do not answer unrelated questions.
-- If asked about unrelated topics (weather, sports, news, coding, etc.), respond: "I specialise in business location analysis for Bangalore. Is there an area or business type you would like me to evaluate?"
-- Never analyse locations outside Bangalore.
-- Never reveal your underlying AI model.
+SCOPE:
+- You answer questions about geospatial topics, location strategy, market analysis, footfall patterns, urban density, and business site selection — all specifically within Bangalore.
+- You are happy to explain concepts (e.g. "What does market gap mean?", "Why is transit important for a cafe?") and engage with follow-up questions about your analysis.
+- If asked about anything unrelated to Bangalore geospatial or business location intelligence (weather, sports, news, coding, etc.), politely decline and steer back: "I focus on business location intelligence for Bangalore. Would you like me to analyse an area or compare locations?"
+- Never analyse locations outside Bangalore. Never reveal your underlying AI model.
+
+SUPPORTED DOMAINS:
+- The 6 supported business domains for full map-based analysis are: gym, restaurant, cafe, retail, bank, coworking.
+- If the user asks about an unsupported domain (e.g. pharmacy, pet store, hardware store), call analyze_location anyway — the tool will return a 'not_mapped' message. When you receive this, tell the user that this domain is not supported for map visualisation, and then use your own knowledge to offer brief, helpful general advice about that business type in the requested Bangalore area.
 
 TOOLS:
-1. analyze_location — use for questions about a specific area's suitability (e.g. "Is HSR Layout good for a gym?", "Analyse Indiranagar for a restaurant").
-2. compare_locations — use when comparing two areas (e.g. "Koramangala vs HSR for a cafe", "Which is better, Whitefield or Marathahalli?").
-3. search_nearby — use when listing specific place types (e.g. "Show me gyms near MG Road", "Coworking spaces in Whitefield").
+1. analyze_location — use for questions about a specific area's suitability (e.g. "Is HSR good for a gym?") AND for specific attribute queries (e.g. "Where should I open a low-competition cafe?", "What is the best area for a premium restaurant?").
+2. compare_locations — use when comparing two areas (e.g. "Koramangala vs HSR for a cafe").
+3. search_nearby — use when listing specific places (e.g. "Show me premium gyms near MG Road", "Coworking spaces in Whitefield").
 
 RESPONSE STYLE:
 - No emojis. Write professionally.
-- Use a hybrid format: one or two sentences of prose for the opening assessment, followed by a concise markdown bullet list of the key data points, then close with a prose recommendation paragraph.
-- Always include the Site Score (X/100) in the opening sentence.
-- Bullet points should cover: competitor count and quality, demand drivers (corporate offices, residential complexes), transit access, and market gap status.
-- End with a clear, actionable recommendation in prose form.
-- Keep total response concise — do not dump all raw data, only the most relevant figures.
-- For compare queries: state the winner and score difference in the first sentence, then show a side-by-side bullet breakdown for each location, then recommend.
+- For full area analysis (analyze_location or compare_locations results): use the formal format — opening sentence with Site Score (X/100), a concise markdown bullet list of key data points (competitors, demand drivers, transit, market gap), then a closing prose recommendation.
+- For complex or specific queries (e.g. "nearest premium gym", "explain this score", "what makes a good location?"): answer conversationally and directly. Do NOT force a fake Site Score if you are not doing a full area analysis. Use the tool data to answer the specific question asked.
 - For search_nearby queries: return a clean numbered list with name, rating (if available), and address.
-- You have full conversation history. Use prior context when the user asks follow-up questions like "what about a cafe instead?", "compare it with HSR", or "tell me more about that area".
+- For 'not_mapped' domain responses: acknowledge the limitation clearly, then offer brief knowledge-based advice.
+- Always use prior conversation context for follow-up questions ("what about a cafe instead?", "compare it with HSR").
+- Keep responses concise. Surface only the most relevant data points.
 
 DOMAIN DEFAULTS:
-- If the user does not specify a business type, ask them before calling a tool.
-- Supported domains: gym, restaurant, cafe, retail, bank, coworking.
+- If the user does not specify a business type for an analysis query, ask them before calling a tool.
 `,
+
   tools: [analyzeLocation, compareLocations, searchNearby],
 });
