@@ -10,8 +10,8 @@ RUN npm install
 # Copy all source files
 COPY . .
 
-# ── Build-time vars — proxy URLs and OAuth Client ID only (NO raw API keys)
-ARG VITE_GOOGLE_CLIENT_ID
+# ── Build-time vars — OAuth Client ID is public, safe to hardcode as default
+ARG VITE_GOOGLE_CLIENT_ID=1044649363322-f69qn7em417sa27od5edf78l4brbm6ai.apps.googleusercontent.com
 ARG VITE_PLACES_PROXY_URL
 ARG VITE_GEMINI_PROXY_URL
 
