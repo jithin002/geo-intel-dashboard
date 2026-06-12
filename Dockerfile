@@ -1,11 +1,11 @@
 # ── Build stage ───────────────────────────────────────────────────────────────
-FROM node:18-alpine AS builder
+FROM node:20-slim AS builder
 
 WORKDIR /app
 
 # Copy package files and install dependencies
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 
 # Copy all source files
 COPY . .
@@ -23,13 +23,15 @@ ENV VITE_GEMINI_PROXY_URL=$VITE_GEMINI_PROXY_URL
 RUN npm run build
 
 # ── Production stage ──────────────────────────────────────────────────────────
-FROM node:18-alpine
+FROM node:20-slim
+
+ENV NODE_ENV=production
 
 WORKDIR /app
 
 # Copy package files and install production dependencies
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm install --omit=dev
 
 # Copy server code
 COPY server.cjs ./

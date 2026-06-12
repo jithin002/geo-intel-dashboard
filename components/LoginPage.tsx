@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { GoogleLogin, CredentialResponse } from '@react-oauth/google';
+import { GoogleLogin, CredentialResponse, googleLogout } from '@react-oauth/google';
 import { useAuth } from '../context/AuthContext';
 
 // ─── Animated background blobs ────────────────────────────────────────────────
@@ -25,7 +25,13 @@ export const LoginPage: React.FC = () => {
 
   const handleSuccess = (credentialResponse: CredentialResponse) => {
     setError(null);
-    login(credentialResponse);
+    try {
+      login(credentialResponse);
+    } catch (err: any) {
+      setError(err.message || 'Login failed.');
+      // Automatically log them out of the Google session so they can try another account
+      googleLogout();
+    }
   };
 
   const handleError = () => {

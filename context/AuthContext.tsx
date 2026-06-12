@@ -48,14 +48,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const login = useCallback((credentialResponse: { credential?: string }) => {
-    if (!credentialResponse.credential) return;
-    try {
-      const decoded = jwtDecode<GoogleUser>(credentialResponse.credential);
-      setUser(decoded);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(decoded));
-    } catch (err) {
-      console.error('Failed to decode Google credential:', err);
+    if (!credentialResponse.credential) throw new Error('No credential received.');
+    
+    const decoded = jwtDecode<GoogleUser>(credentialResponse.credential);
+    
+    if (!decoded.email.endsWith('@econz.net')) {
+      throw new Error('Access restricted: Only @econz.net accounts are allowed.');
     }
+    
+    setUser(decoded);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(decoded));
   }, []);
 
   const logout = useCallback(() => {
