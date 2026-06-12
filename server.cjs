@@ -4,19 +4,23 @@ const { BigQuery } = require('@google-cloud/bigquery');
 const path = require('path');
 
 const app = express();
-const port = 3001;
+const port = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
+// Serve static frontend files (compiled React app)
+app.use(express.static(path.join(__dirname, 'dist')));
+
 // Initialize BigQuery client
-// Pointing directly to the service account JSON we downloaded in the scraper phase
-const keyFilename = path.join(__dirname, 'rent-scraper', 'service-account.json');
-const bigquery = new BigQuery({
-  projectId: 'testing-jithin',
-  keyFilename: keyFilename,
-});
+// Uses Application Default Credentials in production on Cloud Run,
+// or local service account JSON for local development.
+const bigQueryConfig = { projectId: 'testing-jithin' };
+if (process.env.NODE_ENV !== 'production') {
+  bigQueryConfig.keyFilename = path.join(__dirname, 'rent-scraper', 'service-account.json');
+}
+const bigquery = new BigQuery(bigQueryConfig);
 
 app.get('/api/rent-insights', async (req, res) => {
   try {
@@ -128,7 +132,7 @@ app.get('/api/rent-listings', async (req, res) => {
 // next request to maintain full conversation context across turns.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const ADK_URL      = 'http://localhost:8000';
+const ADK_URL      = process.env.ADK_URL || 'http://localhost:8000';
 const ADK_APP      = 'agent';          // matches the filename: geo-intel-agent/agent.ts
 const ADK_AGENT    = 'geo_intel_agent'; // matches name: in LlmAgent({name: ...})
 const DEFAULT_USER = 'geo-intel-user';

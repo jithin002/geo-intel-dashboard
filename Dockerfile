@@ -27,8 +27,12 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-# Install serve
-RUN npm install -g serve
+# Copy package files and install production dependencies
+COPY package*.json ./
+RUN npm ci --only=production
+
+# Copy server code
+COPY server.cjs ./
 
 # Copy only the compiled static files
 COPY --from=builder /app/dist ./dist
@@ -40,5 +44,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
   CMD node -e "require('http').get('http://localhost:8080',(r)=>{if(r.statusCode!==200)throw new Error(r.statusCode)})"
 
-# Start serve — uses $PORT env var injected by Cloud Run (8080 by default)
-CMD serve -s dist -l ${PORT:-8080}
+# Start the Express server
+CMD ["node", "server.cjs"]
