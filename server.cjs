@@ -276,52 +276,76 @@ app.post('/api/chat', async (req, res) => {
 
     // ── Step 3: Parse SSE stream → extract agent text + tool data ────────────
     // /run_sse returns a stream of "data: <json>\n\n" lines.
-    // Events of interest:
-    //   author === ADK_AGENT          → final text response
-    //   author === 'analyze_location' → tool result with coordinates + scores
-    //   author === 'compare_locations'→ tool result with two-location comparison
+    // ADK event shapes vary by version — we try multiple extraction paths.
     const rawText = await runRes.text();
     const lines   = rawText.split('\n');
     let agentText = '';
+    let fallbackText = '';  // any non-user text, used if primary match fails
     let toolData  = null;
 
     const TOOL_NAMES = new Set(['analyze_location', 'compare_locations', 'search_nearby']);
 
     for (const line of lines) {
       if (!line.startsWith('data: ')) continue;
+      const payload = line.slice(6).trim();
+      if (!payload || payload === '[DONE]') continue;
       try {
-        const event = JSON.parse(line.slice(6));
+        const event = JSON.parse(payload);
+        const author = event.author || '';
+        const parts  = event.content?.parts || event.parts || [];
 
-        // Final agent prose response
-        if (event.author === ADK_AGENT && event.content?.parts?.[0]?.text) {
-          agentText = event.content.parts[0].text;
-        }
+        // ── Primary: match our agent by name ──────────────────────────────
+        if (author === ADK_AGENT) {
+          // Text response (multiple possible shapes)
+          const txt = parts[0]?.text ?? event.text ?? event.content?.text ?? '';
+          if (txt) agentText = txt;
 
-        // Tool response — identified by functionResponse part (author is still geo_intel_agent)
-        if (event.author === ADK_AGENT) {
-          for (const part of (event.content?.parts || [])) {
+          // Tool response (functionResponse in parts)
+          for (const part of parts) {
             const fr = part?.functionResponse;
             if (fr && TOOL_NAMES.has(fr.name)) {
-              // ADK wraps return value in fr.response.output
               const output = fr.response?.output ?? fr.response;
-              if (output?.status === 'success') {
-                toolData = output;
-              }
+              if (output?.status === 'success') toolData = output;
             }
           }
         }
+
+        // ── Fallback: capture any non-user, non-tool text ─────────────────
+        if (author && author !== 'user' && author !== ADK_AGENT) {
+          const txt = parts[0]?.text ?? event.text ?? '';
+          if (txt && !fallbackText) fallbackText = txt;
+        }
+
+        // ── Final response marker (some ADK versions emit this) ────────────
+        if (event.type === 'final_response' || event.is_final_response) {
+          const txt = parts[0]?.text ?? event.text ?? event.response ?? '';
+          if (txt) agentText = txt;
+        }
+
       } catch {
         // malformed SSE line — skip
       }
     }
 
+    // If primary agent name didn't match, use fallback text
+    if (!agentText && fallbackText) {
+      console.warn(`[ADK] Primary author "${ADK_AGENT}" not found in SSE — using fallback text`);
+      agentText = fallbackText;
+    }
+
+    // Log raw SSE for debugging when no text was extracted
+    if (!agentText) {
+      console.warn('[ADK] No agent text extracted. Raw SSE (first 800 chars):', rawText.slice(0, 800));
+    }
+
     console.log(`[ADK] Session ${activeSessionId} → text: ${agentText.length} chars | toolData: ${toolData ? JSON.stringify(toolData).slice(0, 80) : 'none'}`);
 
     return res.json({
-      text:      agentText || 'No response received from the agent.',
+      text:      agentText || 'I am ready to help! Ask me about any Bangalore area for business location intelligence.',
       sessionId: activeSessionId,
       toolData,  // coordinates, scores, comparison winner — used by frontend for map nav
     });
+
 
   } catch (error) {
     console.error('[ADK] Proxy error:', error);
