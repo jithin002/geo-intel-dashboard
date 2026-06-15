@@ -55,15 +55,16 @@ const AREA_COORDS: Record<string, [number, number]> = {
 };
 
 // Domain-to-competitor-types mapping
+// ⚠️ Must match domains.ts (frontend) competitorTypes + infraTypes exactly
 const DOMAIN_TYPES: Record<string, { competitors: string[]; infra: string[]; label: string }> = {
   gym: {
     competitors: ['gym'],
-    infra: ['cafe', 'coffee_shop', 'yoga_studio'],
+    infra: ['cafe', 'restaurant'],
     label: 'Gym / Fitness Studio',
   },
   restaurant: {
-    competitors: ['restaurant', 'food'],
-    infra: ['shopping_mall', 'movie_theater'],
+    competitors: ['restaurant', 'cafe'],   // matches frontend: competitorTypes
+    infra: ['shopping_mall', 'movie_theater', 'tourist_attraction', 'night_club', 'university'],
     label: 'Restaurant / Cafe',
   },
   cafe: {
@@ -72,13 +73,13 @@ const DOMAIN_TYPES: Record<string, { competitors: string[]; infra: string[]; lab
     label: 'Cafe',
   },
   retail: {
-    competitors: ['clothing_store', 'shoe_store', 'shopping_mall'],
-    infra: ['bus_station', 'subway_station'],
+    competitors: ['supermarket', 'department_store', 'convenience_store'], // matches frontend
+    infra: ['cafe', 'restaurant', 'shopping_mall', 'movie_theater'],
     label: 'Retail Store',
   },
   bank: {
     competitors: ['bank', 'atm'],
-    infra: ['shopping_mall', 'supermarket'],
+    infra: ['shopping_mall', 'supermarket', 'department_store'],
     label: 'Bank / ATM',
   },
   coworking: {
@@ -163,19 +164,20 @@ async function nearbySearch(
     rankPreference: 'POPULARITY',
   };
 
+  // ── Route through the Express proxy so we use the same API key + path as the
+  // frontend Intelligence Panel. This ensures ADK and Panel show identical data.
+  const BACKEND = process.env.BACKEND_URL || 'http://localhost:3001';
+
   try {
-    const res = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
+    const res = await fetch(`${BACKEND}/api/places`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Goog-Api-Key': PLACES_API_KEY,
-        'X-Goog-FieldMask': fieldMask,
-      },
-      body: JSON.stringify(body),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint: 'v1/places:searchNearby', body, fieldMask }),
     });
     if (!res.ok) return [];
-    const data = await res.json();
-    return (data.places || []).filter(
+    const wrapper = await res.json();
+    const places = wrapper.data?.places || [];
+    return places.filter(
       (p: any) => !p.businessStatus || p.businessStatus === 'OPERATIONAL'
     );
   } catch {
