@@ -163,16 +163,28 @@ async function fetchSingleZone(
                 body: JSON.stringify(body),
             });
         } else {
-            // Production: route through Cloud Function proxy (key stays server-side)
-            response = await fetch(PLACES_PROXY_URL, {
+            // Production: route through Express proxy (key stays server-side)
+            const proxyBody = JSON.stringify({
+                endpoint: 'v1/places:searchNearby',
+                body,
+                fieldMask,
+            });
+
+            const doProxyFetch = () => fetch(PLACES_PROXY_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    endpoint: 'v1/places:searchNearby',
-                    body,
-                    fieldMask,
-                }),
+                body: proxyBody,
             });
+
+            response = await doProxyFetch();
+
+            // Retry once on 502 (transient gateway error from concurrent load)
+            if (response.status === 502) {
+                console.warn(`⚠️ Places proxy 502 for types, retrying in 600ms...`);
+                await new Promise(r => setTimeout(r, 600));
+                response = await doProxyFetch();
+            }
+
             // Proxy wraps response in { success, data } — unwrap it
             if (response.ok) {
                 const wrapper = await response.json();
@@ -197,6 +209,7 @@ async function fetchSingleZone(
         return [];
     }
 }
+
 
 function mapPlace(place: any): PlaceResult {
     return {
@@ -245,7 +258,7 @@ export async function textSearch(
                 body: JSON.stringify(body),
             });
         } else {
-            response = await fetch(PLACES_PROXY_URL, {
+            const doTextProxyFetch = () => fetch(PLACES_PROXY_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -254,6 +267,11 @@ export async function textSearch(
                     fieldMask: ADVANCED_FIELD_MASK,
                 }),
             });
+            response = await doTextProxyFetch();
+            if (response.status === 502) {
+                await new Promise(r => setTimeout(r, 600));
+                response = await doTextProxyFetch();
+            }
             if (response.ok) {
                 const wrapper = await response.json();
                 return (wrapper.data?.places || []).map(mapPlace);

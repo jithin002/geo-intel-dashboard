@@ -130,29 +130,47 @@ app.post('/api/places', async (req, res) => {
   const apiKey = process.env.GOOGLE_MAPS_API_KEY;
   if (!apiKey) {
     console.error('[Places] GOOGLE_MAPS_API_KEY env var is not set');
-    return res.status(500).json({ error: 'Places API key not configured on server' });
+    return res.status(500).json({ success: false, error: 'Places API key not configured on server' });
   }
 
   const { endpoint = 'v1/places:searchNearby', body: reqBody, fieldMask } = req.body;
 
   if (!reqBody) {
-    return res.status(400).json({ error: 'Missing body in request' });
+    return res.status(400).json({ success: false, error: 'Missing body in request' });
   }
 
   const googleUrl = `https://places.googleapis.com/${endpoint}`;
-  const mask = fieldMask || 
+  const mask = fieldMask ||
     'places.id,places.displayName,places.location,places.types,places.businessStatus,places.rating,places.userRatingCount,places.priceLevel,places.formattedAddress';
 
+  // Helper — one attempt with an 8-second timeout
+  const attemptFetch = () => fetch(googleUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey,
+      'X-Goog-FieldMask': mask,
+    },
+    body: JSON.stringify(reqBody),
+    signal: AbortSignal.timeout(8000), // fail fast instead of hanging the gateway
+  });
+
   try {
-    const googleRes = await fetch(googleUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Goog-Api-Key': apiKey,
-        'X-Goog-FieldMask': mask,
-      },
-      body: JSON.stringify(reqBody),
-    });
+    let googleRes;
+    try {
+      googleRes = await attemptFetch();
+    } catch (firstErr) {
+      // Retry once on transient network errors (ECONNRESET, AbortError, etc.)
+      const isTransient = firstErr.name === 'AbortError' ||
+        firstErr.code === 'ECONNRESET' || firstErr.code === 'ETIMEDOUT';
+      if (isTransient) {
+        console.warn('[Places] Transient error on first attempt, retrying once:', firstErr.message);
+        await new Promise(r => setTimeout(r, 300)); // brief pause before retry
+        googleRes = await attemptFetch();
+      } else {
+        throw firstErr; // non-transient — propagate to outer catch
+      }
+    }
 
     const data = await googleRes.json();
 
@@ -164,10 +182,15 @@ app.post('/api/places', async (req, res) => {
     // Return in { success, data } wrapper — matches what placesAPIService.ts expects
     res.json({ success: true, data });
   } catch (err) {
-    console.error('[Places] Proxy fetch error:', err.message);
-    res.status(502).json({ success: false, error: 'Failed to reach Google Places API' });
+    const isTimeout = err.name === 'AbortError' || err.name === 'TimeoutError';
+    console.error(`[Places] Proxy ${isTimeout ? 'TIMEOUT' : 'NETWORK'} error:`, err.message);
+    res.status(502).json({
+      success: false,
+      error: isTimeout ? 'Places API request timed out' : 'Failed to reach Google Places API',
+    });
   }
 });
+
 
 // ── /api/chat — Geo-Intel ADK Agent proxy ────────────────────────────────────
 //
