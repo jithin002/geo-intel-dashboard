@@ -303,8 +303,8 @@ app.post('/api/chat', async (req, res) => {
 });
 
 // ── SPA catch-all — must be LAST route ───────────────────────────────────────
-// Serves index.html for any non-API route so that React Router handles navigation.
-app.get('*', (req, res) => {
+// Use regex instead of '*' for Express v5 / path-to-regexp v8+ compatibility.
+app.get(/.*/, (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
