@@ -80,6 +80,31 @@ export async function processUserQueryADK(
         // which updates the Intelligence Panel with real scores — same as before.
         let mapAction: ChatResponse['mapAction'] = undefined;
 
+        // ── Detect domain from user message ───────────────────────────────────
+        // Use a broad keyword map (including common typos) so the domain switches
+        // even when the user misspells (e.g. "restuarant" → restaurant).
+        const msgLower = userMessage.toLowerCase();
+        const DOMAIN_MAP: Record<string, string> = {
+            // Restaurant / cafe
+            'restaurant': 'restaurant', 'restuarant': 'restaurant', 'restaraunt': 'restaurant',
+            'cafe': 'restaurant', 'coffee': 'restaurant', 'food': 'restaurant',
+            'dining': 'restaurant', 'eat': 'restaurant', 'eatery': 'restaurant',
+            'bakery': 'restaurant', 'pizza': 'restaurant', 'biryani': 'restaurant',
+            // Gym
+            'gym': 'gym', 'fitness': 'gym', 'workout': 'gym', 'crossfit': 'gym',
+            'pilates': 'gym', 'yoga': 'gym', 'health club': 'gym',
+            // Bank
+            'bank': 'bank', 'atm': 'bank', 'finance': 'bank', 'branch': 'bank',
+            // Retail
+            'retail': 'retail', 'shop': 'retail', 'store': 'retail', 'shopping': 'retail',
+            'supermarket': 'retail', 'grocery': 'retail', 'market': 'retail',
+        };
+        let detectedDomain: string | undefined;
+        // Check multi-word first, then single-word
+        for (const [kw, dom] of Object.entries(DOMAIN_MAP)) {
+            if (msgLower.includes(kw)) { detectedDomain = dom; break; }
+        }
+
         const td = data.toolData;
         if (td) {
             if (td.coordinates && td.location) {
@@ -91,6 +116,7 @@ export async function processUserQueryADK(
                         zoom: 15,
                         triggerAnalysis: true,
                         wardName: td.location,
+                        domain: detectedDomain,
                     },
                 };
             } else if (td.comparison && td.location1 && td.location2) {
@@ -105,11 +131,13 @@ export async function processUserQueryADK(
                             zoom: 15,
                             triggerAnalysis: true,
                             wardName: winner,
+                            domain: detectedDomain,
                         },
                     };
                 }
             }
         }
+
 
         return {
             text: data.text || 'No response received.',

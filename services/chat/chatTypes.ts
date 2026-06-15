@@ -36,6 +36,7 @@ export interface MapAction {
         wardName?: string;
         poiType?: string;
         triggerAnalysis?: boolean;
+        domain?: string;  // domain to switch to before running analysis
     };
 }
 

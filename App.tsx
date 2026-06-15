@@ -553,6 +553,13 @@ const App: React.FC<{
                             setMapNavigateKey(k => k + 1);
                             setSelectedWard(action.payload.wardName || null);
 
+                            // Switch domain if the AI detected a different one from the message
+                            const targetDomain = (action.payload.domain || detectedDomain) as DomainId;
+                            if (targetDomain && targetDomain !== activeDomain) {
+                                setActiveDomain(targetDomain);
+                            }
+                            const analysisDomain = targetDomain || detectedDomain;
+
                             if (action.payload.triggerAnalysis) {
                                 if (response.prefetchedIntel) {
                                     const intel = response.prefetchedIntel;
@@ -567,22 +574,22 @@ const App: React.FC<{
                                     });
 
                                     // Async worker call
-                                    const cachedScores = await calculateDomainScoresAsync(intel, detectedDomain as DomainId, searchRadius);
+                                    const cachedScores = await calculateDomainScoresAsync(intel, analysisDomain as DomainId, searchRadius);
                                     setScores(cachedScores);
 
                                     if (isGymShape) {
                                         setAiInsight(generateDataDrivenRecommendation(intel, cachedScores));
                                     } else {
-                                        setAiInsight(generateDomainRecommendation(intel, detectedDomain));
+                                        setAiInsight(generateDomainRecommendation(intel, analysisDomain));
                                     }
 
-                                    if (detectedDomain !== 'gym') {
+                                    if (analysisDomain !== 'gym') {
                                         const chatLocation = newLoc;
-                                        setTimeout(() => { performAnalysis(detectedDomain, null, chatLocation); }, 400);
+                                        setTimeout(() => { performAnalysis(analysisDomain, null, chatLocation); }, 400);
                                     }
                                 } else {
                                     const chatLocation = newLoc;
-                                    setTimeout(() => { performAnalysis(detectedDomain, null, chatLocation); }, 300);
+                                    setTimeout(() => { performAnalysis(analysisDomain, null, chatLocation); }, 300);
                                 }
                             }
                         }
@@ -592,6 +599,7 @@ const App: React.FC<{
                         break;
                 }
             }
+
 
             const finalMessages = addMessage(updatedMessages, 'assistant', response.text);
             setConversationMessages(finalMessages);
