@@ -223,6 +223,10 @@ app.post('/api/chat', async (req, res) => {
     }
 
     // ── Step 2: Send message to ADK via /run_sse ─────────────────────────────
+    // Use AbortController with 60s timeout to handle cold starts on Cloud Run.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60000);
+
     const runRes = await fetch(`${ADK_URL}/run_sse`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -235,11 +239,13 @@ app.post('/api/chat', async (req, res) => {
           parts: [{ text: message.trim() }],
         },
       }),
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
 
     if (!runRes.ok) {
       const err = await runRes.text();
-      console.error('ADK /run_sse error:', runRes.status, err);
+      console.error('ADK /run_sse error:', runRes.status, err.slice(0, 500));
       return res.status(502).json({
         error: 'Agent returned an error. Please try again.',
       });
