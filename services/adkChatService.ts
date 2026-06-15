@@ -14,7 +14,10 @@ import type { ChatContext, ChatResponse } from './chat/chatTypes';
 // ── ADK session state (module-level = persists across messages in same session) ─
 let adkSessionId: string | null = null;
 
-const ADK_CHAT_URL = 'http://localhost:3001/api/chat';
+// In production (Cloud Run) use a relative path — same Express server handles /api/chat.
+// In local dev, explicitly point to port 3001.
+const ADK_CHAT_URL = import.meta.env.PROD ? '/api/chat' : 'http://localhost:3001/api/chat';
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Main entry point — drop-in replacement for processUserQuery
@@ -56,7 +59,7 @@ export async function processUserQueryADK(
             const err = await res.json().catch(() => ({}));
             console.error('❌ ADK chat error:', err);
             return {
-                text: 'I had trouble connecting to the intelligence agent. Please make sure the ADK server is running, then try again.',
+                text: 'I had trouble connecting to the intelligence agent. Please try again.',
                 usedPlacesAPI: false,
                 usedGemini: false,
             };
@@ -118,7 +121,7 @@ export async function processUserQueryADK(
     } catch (error) {
         console.error('❌ ADK chat fetch failed:', error);
         return {
-            text: 'Unable to reach the location intelligence agent. Please check that both server.cjs (port 3001) and the ADK server (port 8000) are running.',
+            text: 'Unable to reach the AI agent. Please try again in a moment.',
             usedPlacesAPI: false,
             usedGemini: false,
         };

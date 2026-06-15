@@ -212,7 +212,7 @@ app.post('/api/chat', async (req, res) => {
         const err = await sessionRes.text();
         console.error('ADK session creation failed:', err);
         return res.status(502).json({
-          error: 'Could not create agent session. Make sure the ADK server is running on port 8000.',
+          error: 'Could not start an agent session. The AI service may be temporarily unavailable.',
         });
       }
 
@@ -297,7 +297,7 @@ app.post('/api/chat', async (req, res) => {
   } catch (error) {
     console.error('[ADK] Proxy error:', error);
     return res.status(502).json({
-      error: 'Failed to reach the Geo-Intel agent. Make sure the ADK server is running on port 8000.',
+      error: 'Unable to reach the AI agent. Please try again in a moment.',
     });
   }
 });
