@@ -696,8 +696,8 @@ const App: React.FC<{
                 rentLoading={rentLoading}
             />
 
-            {/* Right Chat Sidebar */}
-            <div className={`fixed right-4 top-24 bottom-4 w-[360px] max-w-[90vw] z-50 transition-transform duration-300 ease-out pointer-events-none ${chatOpen ? 'translate-x-0' : 'translate-x-[calc(100%+32px)]'}`}>
+            {/* Right Chat Sidebar — desktop only */}
+            <div className={`hidden lg:block fixed right-4 top-24 bottom-4 w-[360px] max-w-[90vw] z-50 transition-transform duration-300 ease-out pointer-events-none ${chatOpen ? 'translate-x-0' : 'translate-x-[calc(100%+32px)]'}`}>
                 <div className="w-full h-full pointer-events-auto flex flex-col">
                     <ChatInterface
                         messages={conversationMessages}
@@ -711,10 +711,26 @@ const App: React.FC<{
                 </div>
             </div>
 
+            {/* Mobile Full-Screen Chat Panel — shown when mobileView === 'chat' */}
+            <div className={`lg:hidden fixed inset-0 z-[180] bg-white transition-transform duration-300 ease-in-out ${mobileView === 'chat' ? 'translate-y-0' : 'translate-y-full'}`}>
+                <div className="flex flex-col h-full pb-20">
+                    <ChatInterface
+                        messages={conversationMessages}
+                        onSendMessage={handleUserMessage}
+                        onClearChat={handleClearChat}
+                        isAITyping={isAITyping}
+                        isOpen={true}
+                        onToggle={() => setMobileView('map')}
+                        selectedWard={selectedWard || undefined}
+                    />
+                </div>
+            </div>
+
+            {/* Chat FAB — desktop only */}
             {!chatOpen && (
                 <button
                     onClick={() => setChatOpen(true)}
-                    className="fixed right-4 bottom-4 z-40 bg-indigo-600 text-white p-4 rounded-full shadow-2xl hover:bg-indigo-700 hover:scale-110 transition-all border border-indigo-400 flex items-center justify-center group"
+                    className="hidden lg:flex fixed right-4 bottom-4 z-40 bg-indigo-600 text-white p-4 rounded-full shadow-2xl hover:bg-indigo-700 hover:scale-110 transition-all border border-indigo-400 items-center justify-center group"
                     title="Open AI Chat"
                 >
                     <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
@@ -723,15 +739,30 @@ const App: React.FC<{
             )}
 
             {/* MOBILE BOTTOM NAVIGATION */}
-            <div className="lg:hidden fixed bottom-0 left-0 right-0 z-[200] bg-white/90 backdrop-blur-xl border-t border-slate-200 p-2 pb-6 flex items-center justify-around shadow-[0_-10px_30px_rgba(0,0,0,0.1)]">
-                <button onClick={() => setMobileView('map')} className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all ${mobileView === 'map' ? 'text-indigo-600 bg-indigo-50 scale-105' : 'text-slate-400'}`}>
-                    <span className="text-xl">🗺️</span><span className="text-[9px] font-black uppercase tracking-widest">Map</span>
+            <div className="lg:hidden fixed bottom-0 left-0 right-0 z-[200] bg-white/95 backdrop-blur-xl border-t border-slate-200 flex items-center justify-around shadow-[0_-4px_20px_rgba(0,0,0,0.08)]" style={{paddingBottom: 'env(safe-area-inset-bottom, 8px)', paddingTop: '8px'}}>
+                <button
+                    onClick={() => { setMobileView('map'); setChatOpen(false); }}
+                    className={`flex flex-col items-center gap-1 px-6 py-2 rounded-xl transition-all ${mobileView === 'map' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400'}`}
+                >
+                    <span className="text-xl">🗺️</span>
+                    <span className="text-[9px] font-black uppercase tracking-widest">Map</span>
                 </button>
-                <button onClick={() => { setMobileView('analytics'); setSheetState('half'); }} className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all ${mobileView === 'analytics' ? 'text-indigo-600 bg-indigo-50 scale-105' : 'text-slate-400'}`}>
-                    <span className="text-xl">📊</span><span className="text-[9px] font-black uppercase tracking-widest">Intelligence</span>
+                <button
+                    onClick={() => { setMobileView('analytics'); setSheetState('half'); setChatOpen(false); }}
+                    className={`flex flex-col items-center gap-1 px-6 py-2 rounded-xl transition-all ${mobileView === 'analytics' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400'}`}
+                >
+                    <span className="text-xl">📊</span>
+                    <span className="text-[9px] font-black uppercase tracking-widest">Intel</span>
                 </button>
-                <button onClick={() => setMobileView('chat')} className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all ${mobileView === 'chat' ? 'text-indigo-600 bg-indigo-50 scale-105' : 'text-slate-400'}`}>
-                    <span className="text-xl">💬</span><span className="text-[9px] font-black uppercase tracking-widest">AI Chat</span>
+                <button
+                    onClick={() => { setMobileView('chat'); }}
+                    className={`flex flex-col items-center gap-1 px-6 py-2 rounded-xl transition-all relative ${mobileView === 'chat' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400'}`}
+                >
+                    <span className="text-xl">💬</span>
+                    <span className="text-[9px] font-black uppercase tracking-widest">AI Chat</span>
+                    {conversationMessages.length > 0 && mobileView !== 'chat' && (
+                        <span className="absolute top-1 right-4 w-2 h-2 bg-indigo-500 rounded-full"></span>
+                    )}
                 </button>
             </div>
         </div>

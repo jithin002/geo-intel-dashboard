@@ -120,6 +120,55 @@ app.get('/api/rent-listings', async (req, res) => {
   }
 });
 
+// ── /api/places — Google Places API proxy (keeps key server-side) ─────────────
+//
+// Request body from frontend (placesAPIService.ts):
+//   { endpoint: 'v1/places:searchNearby' | 'v1/places:searchText', body: {...}, fieldMask: string }
+// Response: { success: true, data: <Google response> }
+// ─────────────────────────────────────────────────────────────────────────────
+app.post('/api/places', async (req, res) => {
+  const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+  if (!apiKey) {
+    console.error('[Places] GOOGLE_MAPS_API_KEY env var is not set');
+    return res.status(500).json({ error: 'Places API key not configured on server' });
+  }
+
+  const { endpoint = 'v1/places:searchNearby', body: reqBody, fieldMask } = req.body;
+
+  if (!reqBody) {
+    return res.status(400).json({ error: 'Missing body in request' });
+  }
+
+  const googleUrl = `https://places.googleapis.com/${endpoint}`;
+  const mask = fieldMask || 
+    'places.id,places.displayName,places.location,places.types,places.businessStatus,places.rating,places.userRatingCount,places.priceLevel,places.formattedAddress';
+
+  try {
+    const googleRes = await fetch(googleUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': mask,
+      },
+      body: JSON.stringify(reqBody),
+    });
+
+    const data = await googleRes.json();
+
+    if (!googleRes.ok) {
+      console.error('[Places] Google API error:', googleRes.status, JSON.stringify(data).slice(0, 200));
+      return res.status(googleRes.status).json({ success: false, error: data });
+    }
+
+    // Return in { success, data } wrapper — matches what placesAPIService.ts expects
+    res.json({ success: true, data });
+  } catch (err) {
+    console.error('[Places] Proxy fetch error:', err.message);
+    res.status(502).json({ success: false, error: 'Failed to reach Google Places API' });
+  }
+});
+
 // ── /api/chat — Geo-Intel ADK Agent proxy ────────────────────────────────────
 //
 // Architecture:
@@ -253,6 +302,14 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
+// ── SPA catch-all — must be LAST route ───────────────────────────────────────
+// Serves index.html for any non-API route so that React Router handles navigation.
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+});
+
 app.listen(port, () => {
-  console.log(`Rent Intelligence API running on http://localhost:${port}`);
+  console.log(`🚀 Geo-Intel server running on port ${port} (NODE_ENV=${process.env.NODE_ENV})`);
+  console.log(`   Google Maps API key: ${process.env.GOOGLE_MAPS_API_KEY ? '✅ set' : '❌ MISSING'}`);
+  console.log(`   ADK URL: ${process.env.ADK_URL || 'http://localhost:8000 (default)'}`);
 });

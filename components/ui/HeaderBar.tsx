@@ -73,7 +73,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
     };
 
     return (
-        <div className={`absolute top-4 z-30 w-[95vw] md:w-[600px] flex flex-col gap-2 pointer-events-none transition-all duration-500 ease-in-out ${showRightSidebar ? 'lg:left-[calc(50%+160px)] lg:-translate-x-1/2' : 'left-1/2 -translate-x-1/2'} left-1/2 -translate-x-1/2`}>
+        <div className={`absolute top-4 z-30 w-[calc(100vw-24px)] md:w-[600px] flex flex-col gap-2 pointer-events-none transition-all duration-500 ease-in-out left-1/2 -translate-x-1/2 ${showRightSidebar ? 'lg:left-[calc(50%+160px)]' : ''}`}>
 
             {/* Search Bar */}
             <div className="backdrop-blur-xl bg-white/80 shadow-2xl border border-white/50 rounded-2xl p-3 flex flex-col pointer-events-auto transition-all">

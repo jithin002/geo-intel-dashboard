@@ -4,7 +4,10 @@
  * Express API server (server.cjs) which queries BigQuery using ST_DWithin.
  */
 
-const API_BASE = 'http://localhost:3001';
+// In production (Cloud Run), the Express server serves both the frontend and the API
+// from the same container, so we use a relative path. In local dev we need the explicit port.
+const API_BASE = import.meta.env.PROD ? '' : 'http://localhost:3001';
+
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
 
