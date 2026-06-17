@@ -1,7 +1,13 @@
-const express = require('express');
-const cors = require('cors');
-const { BigQuery } = require('@google-cloud/bigquery');
-const path = require('path');
+import express from 'express';
+import cors from 'cors';
+import { BigQuery } from '@google-cloud/bigquery';
+import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+import path from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
+
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -285,7 +291,17 @@ async function serverFetchPlaces(apiKey, types, lat, lng, radiusMeters, primaryO
     });
     if (!res.ok) return [];
     const data = await res.json();
-    return (data.places || []).filter(p => !p.businessStatus || p.businessStatus === 'OPERATIONAL');
+    const places = (data.places || []).filter(p => !p.businessStatus || p.businessStatus === 'OPERATIONAL');
+    // Normalize Google Places API (New) format → PlaceResult format expected by the frontend
+    // location: { latitude, longitude } → { lat, lng }
+    // displayName: { text: string }    → string
+    return places.map(p => ({
+      ...p,
+      displayName: p.displayName?.text ?? p.displayName ?? '',
+      location: p.location
+        ? { lat: p.location.latitude ?? p.location.lat, lng: p.location.longitude ?? p.location.lng }
+        : undefined,
+    }));
   } catch { return []; }
 }
 

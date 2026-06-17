@@ -158,7 +158,7 @@ export const DashboardMap: React.FC<DashboardMapProps> = ({
                 )}
 
                 {/* Competitor markers (domain-aware) */}
-                {selectedPos && realPOIs.gyms.length > 0 && realPOIs.gyms.map((gym, idx) => {
+                {selectedPos && realPOIs.gyms.length > 0 && realPOIs.gyms.filter(p => p.location?.lat != null && p.location?.lng != null).map((gym, idx) => {
                     const domainMeta = DOMAIN_ICON_MAP[activeDomain];
                     return (
                         <Marker key={`competitor-${idx}`} position={[gym.location.lat, gym.location.lng]} icon={domainMeta.icon}>
@@ -183,7 +183,7 @@ export const DashboardMap: React.FC<DashboardMapProps> = ({
                 })}
 
                 {/* Corporate markers */}
-                {selectedPos && realPOIs.corporates.length > 0 && realPOIs.corporates.map((corp, idx) => (
+                {selectedPos && realPOIs.corporates.length > 0 && realPOIs.corporates.filter(p => p.location?.lat != null && p.location?.lng != null).map((corp, idx) => (
                     <Marker key={`corp-${idx}`} position={[corp.location.lat, corp.location.lng]} icon={corporateIcon}>
                         <Popup>
                             <div className="p-2 min-w-[160px]">
@@ -202,7 +202,7 @@ export const DashboardMap: React.FC<DashboardMapProps> = ({
                 ))}
 
                 {/* Apartment markers */}
-                {selectedPos && realPOIs.apartments && realPOIs.apartments.length > 0 && realPOIs.apartments.map((apt, idx) => (
+                {selectedPos && realPOIs.apartments.length > 0 && realPOIs.apartments.filter(p => p.location?.lat != null && p.location?.lng != null).map((apt, idx) => (
                     <Marker key={`apt-${idx}`} position={[apt.location.lat, apt.location.lng]} icon={residentialIcon}>
                         <Popup>
                             <div className="p-2 min-w-[160px]">
@@ -221,7 +221,7 @@ export const DashboardMap: React.FC<DashboardMapProps> = ({
                 ))}
 
                 {/* Infra/Cafe markers (domain-aware) */}
-                {selectedPos && realPOIs.cafes.length > 0 && realPOIs.cafes.map((cafe, idx) => {
+                {selectedPos && realPOIs.cafes.length > 0 && realPOIs.cafes.filter(p => p.location?.lat != null && p.location?.lng != null).map((cafe, idx) => {
                     const domainMeta = DOMAIN_ICON_MAP[activeDomain];
                     return (
                         <Marker key={`infra-${idx}`} position={[cafe.location.lat, cafe.location.lng]} icon={domainMeta.infraIcon}>
@@ -246,9 +246,9 @@ export const DashboardMap: React.FC<DashboardMapProps> = ({
                 })}
 
                 {/* Transit markers — split metro vs bus */}
-                {selectedPos && realPOIs.transit.length > 0 && realPOIs.transit.map((station, idx) => {
+                {selectedPos && realPOIs.transit.length > 0 && realPOIs.transit.filter(p => p.location?.lat != null && p.location?.lng != null).map((station, idx) => {
                     const isMetro = station.types?.some((t: string) => t.includes('subway') || t.includes('light_rail'));
-                    const nameHint = station.displayName?.toLowerCase() || '';
+                    const nameHint = (typeof station.displayName === 'string' ? station.displayName : '').toLowerCase();
                     const icon = isMetro ? metroIcon : busIcon;
                     const label = isMetro ? '🚇 METRO' : '🚌 BUS';
                     const badgeColor = isMetro ? 'bg-purple-500' : 'bg-orange-500';

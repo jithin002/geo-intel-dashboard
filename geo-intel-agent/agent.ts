@@ -148,17 +148,7 @@ async function geocodeLocation(query: string): Promise<[number, number] | null> 
   return null;
 }
 
-async function nearbySearch(
-  lat: number,
-  lng: number,
-  radiusMeters: number,
-  types: string[],
-  fieldMask = ADVANCED_MASK
-): Promise<any[]> {
-  const body = {
-    includedTypes: types,
-    locationRestriction: {
-      circle: { center: { latitude: lat, longitude: lng }, radius: radiusMeters },
+
 // ─────────────────────────────────────────────────────────────────────────────
 // callAnalyzeLocation — calls the centralized /api/analyze-location endpoint
 // This is the SINGLE SOURCE OF TRUTH shared with the Intelligence Panel.
@@ -183,6 +173,7 @@ async function callAnalyzeLocation(
     }
     return await res.json();
   } catch (err: any) {
+
     console.error('[analyze-location] fetch failed:', err.message);
     return null;
   }
