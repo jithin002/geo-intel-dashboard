@@ -12,6 +12,19 @@ import {
 import { parseSearchIntent } from './searchUtils';
 import { DOMAIN_CONFIG, DomainId } from './domains';
 import { calculateDomainScoresAsync } from './services/scoringEngine';
+
+// ── Centralized location analysis — single source of truth ───────────────────
+// Both the Intelligence Panel and the ADK Chat call /api/analyze-location so
+// they always show the exact same scores, competitor counts, and strategy text.
+async function fetchCentralizedIntel(lat: number, lng: number, radius: number, domainId: string) {
+    const res = await fetch('/api/analyze-location', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lat, lng, radius, domainId }),
+    });
+    if (!res.ok) throw new Error(`analyze-location failed: ${res.status}`);
+    return res.json() as Promise<{ intel: any; scores: any }>;
+}
 import { ChatInterface } from './components/ChatInterface';
 import {
     addMessage,
@@ -315,37 +328,79 @@ const App: React.FC<{
         const effectiveCluster = overrideCluster !== undefined ? overrideCluster : selectedCluster;
 
         try {
-            const response = await fetch('/api/analyze-location', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ lat: analysisPos[0], lng: analysisPos[1], radius: searchRadius, domainId: domainToUse })
-            });
-            const data = await response.json();
-            const intel = data.intel;
-            const realScores = data.scores;
-            let currentTotalScore = realScores.total;
+            const domain = DOMAIN_CONFIG[domainToUse];
+            let realScores: any = null;
+            let currentTotalScore = 0;
 
-            setRealPOIs({
-                gyms: intel.competitors.places,
-                cafes: intel.infraSynergy.places,
-                corporates: intel.corporateOffices.places,
-                transit: intel.transitStations.places,
-                apartments: intel.apartments.places,
-                parks: []
-            });
+            if (domainToUse === 'gym') {
+                const intel = await getLocationIntelligence(analysisPos[0], analysisPos[1], searchRadius);
+                setRealPOIs({
+                    gyms: intel.gyms.places,
+                    cafes: intel.cafesRestaurants.places,
+                    corporates: intel.corporateOffices.places,
+                    transit: intel.transitStations.places,
+                    apartments: intel.apartments.places,
+                    parks: []
+                });
 
-            setScores(realScores);
+                // USE WEB WORKER FOR SCORING
+                realScores = await calculateDomainScoresAsync(intel, domainToUse, searchRadius);
+                currentTotalScore = realScores.total;
 
-            if (effectiveCluster) {
-                const opportunityScore = realScores.total / 100;
-                const finalScore = opportunityScore;
-                let growthRate = 0.05;
-                if (realScores.demographicLoad > 70) growthRate += 0.03;
-                setWardScores(prev => ({ ...prev, [effectiveCluster]: { opportunityScore, finalScore, growthRate, demographicLoad: realScores.demographicLoad, competitorDensity: intel.competitors.total } }));
+                setScores(realScores);
+
+                if (effectiveCluster) {
+                    const opportunityScore = realScores.total / 100;
+                    const finalScore = opportunityScore;
+                    const demographicLoad = realScores.demographicLoad;
+                    const competitorDensity = intel.gyms.total;
+                    let growthRate = 0;
+                    if (intel.marketGap === 'UNTAPPED') growthRate = 0.15;
+                    else if (intel.marketGap === 'OPPORTUNITY') growthRate = 0.10;
+                    else if (intel.marketGap === 'COMPETITIVE') growthRate = 0.05;
+                    else growthRate = 0.02;
+                    if (demographicLoad > 70) growthRate += 0.03;
+                    if (intel.corporateOffices.total > 10) growthRate += 0.02;
+                    setWardScores(prev => ({ ...prev, [effectiveCluster]: { opportunityScore, finalScore, growthRate, demographicLoad, competitorDensity } }));
+                }
+
+                const recommendation = generateDataDrivenRecommendation(intel, realScores);
+                setAiInsight(recommendation);
+
+            } else {
+                // ── Use centralized /api/analyze-location endpoint ────────────
+                // This guarantees the Intelligence Panel shows the EXACT same
+                // scores and competitor count as the ADK Chat.
+                const { intel, scores: centralScores } = await fetchCentralizedIntel(
+                    analysisPos[0], analysisPos[1], searchRadius, domainToUse
+                );
+                realScores = centralScores;
+                currentTotalScore = realScores.total;
+
+                setRealPOIs({
+                    gyms: intel.competitors.places,
+                    cafes: intel.infraSynergy.places,
+                    corporates: intel.corporateOffices.places,
+                    transit: intel.transitStations.places,
+                    apartments: intel.apartments.places,
+                    parks: []
+                });
+
+                setScores(realScores);
+
+                if (effectiveCluster) {
+                    const opportunityScore = realScores.total / 100;
+                    const finalScore = opportunityScore;
+                    let growthRate = intel.marketGap === 'UNTAPPED' ? 0.15 :
+                        intel.marketGap === 'OPPORTUNITY' ? 0.10 :
+                            intel.marketGap === 'COMPETITIVE' ? 0.05 : 0.02;
+                    if (realScores.demographicLoad > 70) growthRate += 0.03;
+                    setWardScores(prev => ({ ...prev, [effectiveCluster]: { opportunityScore, finalScore, growthRate, demographicLoad: realScores.demographicLoad, competitorDensity: intel.competitors.total } }));
+                }
+
+                const recommendation = generateDomainRecommendation(intel, domainToUse);
+                setAiInsight(recommendation);
             }
-
-            // For AI Insight, we can use a simpler recommendation generator or keep the old one
-            setAiInsight(`Analysis complete for ${domainToUse}. Score: ${realScores.total}/100.`);
 
             const currentCustomParams = customParamsRef.current;
             if (currentCustomParams.length > 0) {
@@ -537,19 +592,15 @@ const App: React.FC<{
                                         parks: []
                                     });
 
-                                    // Async worker call
-                                    const cachedScores = await calculateDomainScoresAsync(intel, analysisDomain as DomainId, searchRadius);
-                                    setScores(cachedScores);
-
+                                    // Use centralized endpoint for non-gym domains
                                     if (isGymShape) {
+                                        const cachedScores = await calculateDomainScoresAsync(intel, analysisDomain as DomainId, searchRadius);
+                                        setScores(cachedScores);
                                         setAiInsight(generateDataDrivenRecommendation(intel, cachedScores));
                                     } else {
-                                        setAiInsight(generateDomainRecommendation(intel, analysisDomain));
-                                    }
-
-                                    if (analysisDomain !== 'gym') {
+                                        // Trigger performAnalysis which uses /api/analyze-location
                                         const chatLocation = newLoc;
-                                        setTimeout(() => { performAnalysis(analysisDomain, null, chatLocation); }, 400);
+                                        setTimeout(() => { performAnalysis(analysisDomain, null, chatLocation); }, 300);
                                     }
                                 } else {
                                     const chatLocation = newLoc;

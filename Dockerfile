@@ -32,12 +32,10 @@ WORKDIR /app
 
 # Copy package files and install production dependencies
 COPY package*.json ./
-RUN npm install --omit=dev
+RUN npm install --omit=dev && npm install tsx
 
 # Copy server code
 COPY server.ts ./
-COPY domains.ts ./
-COPY services/ ./services/
 
 # Copy only the compiled static files
 COPY --from=builder /app/dist ./dist
@@ -49,5 +47,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
   CMD node -e "require('http').get('http://localhost:8080',(r)=>{if(r.statusCode>=500)throw new Error(r.statusCode)})"
 
-# Start the Express server
+# Start the Express server via tsx (TypeScript executor — no compile step needed)
 CMD ["npx", "tsx", "server.ts"]

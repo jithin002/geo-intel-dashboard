@@ -18,9 +18,7 @@ import { z } from 'zod';
 // Config
 // ─────────────────────────────────────────────────────────────────────────────
 
-const PLACES_API_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
+const PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY || '';
 
 // Field masks
 const BASIC_MASK = 'places.id,places.displayName,places.location,places.types,places.businessStatus';
@@ -161,102 +159,84 @@ async function nearbySearch(
     includedTypes: types,
     locationRestriction: {
       circle: { center: { latitude: lat, longitude: lng }, radius: radiusMeters },
-    },
-    maxResultCount: 20,
-    rankPreference: 'POPULARITY',
-  };
+// ─────────────────────────────────────────────────────────────────────────────
+// callAnalyzeLocation — calls the centralized /api/analyze-location endpoint
+// This is the SINGLE SOURCE OF TRUTH shared with the Intelligence Panel.
+// ─────────────────────────────────────────────────────────────────────────────
 
-  // ── Route through the Express proxy so we use the same API key + path as the
-  // frontend Intelligence Panel. This ensures ADK and Panel show identical data.
-  const BACKEND = process.env.BACKEND_URL || 'http://localhost:3001';
-
-  try {
-    const res = await fetch(`${BACKEND}/api/places`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ endpoint: 'v1/places:searchNearby', body, fieldMask }),
-    });
-    if (!res.ok) return [];
-    const wrapper = await res.json();
-    const places = wrapper.data?.places || [];
-    return places.filter(
-      (p: any) => !p.businessStatus || p.businessStatus === 'OPERATIONAL'
-    );
-  } catch {
-    return [];
-  }
-}
-
-async function fetchLocationIntel(
+async function callAnalyzeLocation(
   lat: number,
   lng: number,
   radius: number,
-  domain: string
-): Promise<any> {
-  const url = `${BACKEND_URL}/api/analyze-location`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lat, lng, radius, domainId: domain })
-  });
-  if (!res.ok) throw new Error(`Analyze Location API returned ${res.status}`);
-  const data = await res.json();
-  if (data.error) throw new Error(data.error);
-
-  return {
-    intel: data.intel,
-    scores: data.scores
-  };
+  domainId: string
+): Promise<{ intel: any; scores: any } | null> {
+  const BACKEND = process.env.BACKEND_URL || 'http://localhost:3001';
+  try {
+    const res = await fetch(`${BACKEND}/api/analyze-location`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lat, lng, radius, domainId }),
+    });
+    if (!res.ok) {
+      console.error(`[analyze-location] HTTP ${res.status}`);
+      return null;
+    }
+    return await res.json();
+  } catch (err: any) {
+    console.error('[analyze-location] fetch failed:', err.message);
+    return null;
+  }
 }
 
-function formatIntelReport(
+// Map ADK domain names to the domainId expected by /api/analyze-location
+function mapDomain(domain: string): string {
+  const MAP: Record<string, string> = {
+    gym: 'gym', restaurant: 'restaurant', cafe: 'restaurant',
+    retail: 'retail', bank: 'bank', coworking: 'gym',
+  };
+  return MAP[domain] || 'gym';
+}
+
+function buildReport(
   location: string,
-  lat: number,
-  lng: number,
-  data: Awaited<ReturnType<typeof fetchLocationIntel>>,
-  domain: string
+  domain: string,
+  intel: any,
+  scores: any
 ): string {
   const domainCfg = DOMAIN_TYPES[domain] || DOMAIN_TYPES['gym'];
-  const { intel, scores } = data;
   const competitors = intel.competitors.places || [];
-  const corporates = intel.corporateOffices.places || [];
-  const transit = intel.transitStations.places || [];
-  const apartments = intel.apartments.places || [];
-  const infra = intel.infraSynergy.places || [];
-
   const highRated = competitors.filter((p: any) => (p.rating || 0) >= 4.0);
-  const avgRating =
-    competitors.length > 0
-      ? (competitors.reduce((s: number, p: any) => s + (p.rating || 0), 0) / competitors.length).toFixed(1)
-      : null;
+  const avgRating = intel.competitors.averageRating;
 
-  // Build a clean structured data block for the LLM to synthesise into prose
+  // Competition level labels
+  const levelLabel: Record<string, string> = { LOW: 'Low', MEDIUM: 'Medium', HIGH: 'High', VERY_HIGH: 'Very High' };
+  const gapLabel:   Record<string, string> = { UNTAPPED: 'Untapped', OPPORTUNITY: 'Opportunity', COMPETITIVE: 'Competitive', SATURATED: 'Saturated' };
+
   let report = `LOCATION: ${location}\n`;
   report += `DOMAIN: ${domainCfg.label}\n`;
   report += `SITE SCORE: ${scores.total}/100\n`;
-  report += `  - Demographic Load: ${Math.round(scores.demographicLoad)}/100\n`;
-  report += `  - Connectivity: ${Math.round(scores.connectivity)}/100\n`;
-  report += `  - Competitor Ratio: ${Math.round(scores.competitorRatio)}/100\n`;
-  report += `  - Infrastructure: ${Math.round(scores.infrastructure)}/100\n\n`;
+  report += `  - Demand: ${scores.demographicLoad}\n`;
+  report += `  - Competition Gap: ${scores.competitorRatio}\n`;
+  report += `  - Connectivity: ${scores.connectivity}\n`;
+  report += `  - Infra/Vibe: ${scores.infrastructure}\n\n`;
 
   report += `AREA INTELLIGENCE:\n`;
-  report += `  Competitors (${domainCfg.label}): ${intel.competitors.total} total`;
+  report += `  Competitors (${domainCfg.label}): ${competitors.length} total`;
   if (avgRating) report += `, ${highRated.length} rated 4+ stars, average rating ${avgRating}`;
   report += `\n`;
-  report += `  Corporate Offices: ${corporates.length}\n`;
-  report += `  Residential Complexes: ${apartments.length}\n`;
-  if (domain !== 'cafe' && domain !== 'restaurant') report += `  Cafes (Infra): ${infra.length}\n`;
-  if (infra.length > 0) report += `  Domain Infra / Synergy Points: ${infra.length}\n`;
-  report += `  Transit Stations: ${transit.length}\n`;
-  report += `  Competition Level: ${scores.competitionLevel}\n`;
-  report += `  Market Gap: ${scores.marketGap}\n`;
+  report += `  Corporate Offices: ${intel.corporateOffices.total}\n`;
+  report += `  Residential Complexes: ${intel.apartments.total}\n`;
+  report += `  Infra / Synergy Points: ${intel.infraSynergy.total}\n`;
+  report += `  Transit Stations: ${intel.transitStations.total}\n`;
+  report += `  Competition Level: ${levelLabel[intel.competitionLevel] || intel.competitionLevel}\n`;
+  report += `  Market Gap: ${gapLabel[intel.marketGap] || intel.marketGap}\n`;
 
   // Top competitors list for context
   if (competitors.length > 0) {
     report += `\nNOTABLE COMPETITORS:\n`;
     competitors.slice(0, 5).forEach((p: any) => {
       const name = p.displayName?.text || p.displayName || 'Unknown';
-      const rating = p.rating ? ` — ${p.rating} stars` : '';
+      const rating = p.rating ? ` — ${p.rating}★` : '';
       report += `  - ${name}${rating}\n`;
     });
   }
@@ -290,8 +270,8 @@ const analyzeLocation = new FunctionTool({
       .optional()
       .describe('Search radius in meters. Default is 1000 (1 km).')
       .default(1000),
-  }) as any,
-  execute: async ({ location, domain, radius_meters }: any) => {
+  }),
+  execute: async ({ location, domain, radius_meters }) => {
     const radius = radius_meters || 1000;
 
     // Guard: unsupported domain — inform the user, skip map analysis
@@ -325,24 +305,42 @@ const analyzeLocation = new FunctionTool({
 
     console.log(`📍 Geocoded "${location}" → [${lat}, ${lng}]`);
 
-    // Fetch intelligence
-    const data = await fetchLocationIntel(lat, lng, radius, domain);
-    const { intel, scores } = data;
-    const report = formatIntelReport(location, lat, lng, data, domain);
+    // Call the centralized endpoint — same data as the Intelligence Panel
+    const mappedDomain = mapDomain(domain);
+    const result = await callAnalyzeLocation(lat, lng, radius, mappedDomain);
+
+    if (!result) {
+      return {
+        status: 'error',
+        message: `Could not retrieve location intelligence for "${location}". The data service may be temporarily unavailable.`,
+      };
+    }
+
+    const { intel, scores } = result;
+    const report = buildReport(location, domain, intel, scores);
 
     return {
       status: 'success',
       location,
       coordinates: { lat, lng },
       report,
-      scores,
+      scores: {
+        total: scores.total,
+        competitionLevel: intel.competitionLevel,
+        marketGap: intel.marketGap,
+        demographicLoad: scores.demographicLoad,
+        connectivity: scores.connectivity,
+        competitorRatio: scores.competitorRatio,
+        infrastructure: scores.infrastructure,
+      },
       summary: {
         competitors: intel.competitors.total,
         corporates: intel.corporateOffices.total,
         apartments: intel.apartments.total,
         transit: intel.transitStations.total,
         siteScore: scores.total,
-        marketGap: 'See report',
+        competitionLevel: intel.competitionLevel,
+        marketGap: intel.marketGap,
       },
     };
   },
@@ -360,15 +358,15 @@ const compareLocations = new FunctionTool({
     'Use this when the user asks "which is better", "compare X vs Y", or "X or Y for my business". ' +
     'Only supports: gym, restaurant, cafe, retail, bank, coworking.',
   parameters: z.object({
-    location1: z.string().describe('First Bangalore area (e.g. "Koramangala").'),
-    location2: z.string().describe('Second Bangalore area (e.g. "HSR Layout").'),
+    location1: z.string().describe('First Bangalore area to compare.'),
+    location2: z.string().describe('Second Bangalore area to compare.'),
     domain: z
       .enum(['gym', 'restaurant', 'cafe', 'retail', 'bank', 'coworking'])
-      .describe('Business domain being compared.')
+      .describe('Business domain / type being evaluated.')
       .default('gym'),
     radius_meters: z.number().optional().default(1000),
-  }) as any,
-  execute: async ({ location1, location2, domain, radius_meters }: any) => {
+  }),
+  execute: async ({ location1, location2, domain, radius_meters }) => {
     const radius = radius_meters || 1000;
 
     // Guard: unsupported domain
@@ -403,17 +401,21 @@ const compareLocations = new FunctionTool({
 
     console.log(`⚖️  Comparing "${location1}" [${coords1}] vs "${location2}" [${coords2}]`);
 
-    // Fetch intelligence for both in parallel
-    const [data1, data2] = await Promise.all([
-      fetchLocationIntel(coords1[0], coords1[1], radius, domain),
-      fetchLocationIntel(coords2[0], coords2[1], radius, domain),
+    // Fetch intelligence for both in parallel via the centralized endpoint
+    const mappedDomain = mapDomain(domain);
+    const [result1, result2] = await Promise.all([
+      callAnalyzeLocation(coords1[0], coords1[1], radius, mappedDomain),
+      callAnalyzeLocation(coords2[0], coords2[1], radius, mappedDomain),
     ]);
 
-    const { scores: scores1 } = data1;
-    const { scores: scores2 } = data2;
+    if (!result1) return { status: 'error', message: `Could not get intel for "${location1}".` };
+    if (!result2) return { status: 'error', message: `Could not get intel for "${location2}".` };
 
-    const report1 = formatIntelReport(location1, coords1[0], coords1[1], data1, domain);
-    const report2 = formatIntelReport(location2, coords2[0], coords2[1], data2, domain);
+    const { intel: intel1, scores: scores1 } = result1;
+    const { intel: intel2, scores: scores2 } = result2;
+
+    const report1 = buildReport(location1, domain, intel1, scores1);
+    const report2 = buildReport(location2, domain, intel2, scores2);
 
     const winner = scores1.total >= scores2.total ? location1 : location2;
     const winnerScore = Math.max(scores1.total, scores2.total);
@@ -464,8 +466,8 @@ const searchNearby = new FunctionTool({
         'Google Places type to search for (e.g. "gym", "cafe", "restaurant", "coworking_space", "apartment_complex").'
       ),
     radius_meters: z.number().optional().default(1500),
-  }) as any,
-  execute: async ({ location, place_type, radius_meters }: any) => {
+  }),
+  execute: async ({ location, place_type, radius_meters }) => {
     const radius = radius_meters || 1500;
 
     const coords = await geocodeLocation(location);

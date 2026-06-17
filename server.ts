@@ -1,13 +1,7 @@
-import express from 'express';
-import cors from 'cors';
-import { BigQuery } from '@google-cloud/bigquery';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { DOMAIN_CONFIG } from './domains.js';
-import { calculateDomainScores } from './services/scoringEngine.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const express = require('express');
+const cors = require('cors');
+const { BigQuery } = require('@google-cloud/bigquery');
+const path = require('path');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -20,7 +14,9 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'dist')));
 
 // Initialize BigQuery client
-const bigQueryConfig: any = { projectId: 'testing-jithin' };
+// Uses Application Default Credentials in production on Cloud Run,
+// or local service account JSON for local development.
+const bigQueryConfig = { projectId: 'testing-jithin' };
 if (process.env.NODE_ENV !== 'production') {
   bigQueryConfig.keyFilename = path.join(__dirname, 'rent-scraper', 'service-account.json');
 }
@@ -35,9 +31,9 @@ app.get('/api/rent-insights', async (req, res) => {
     }
 
     // Convert string query params to numbers
-    const latitude = parseFloat(lat as string);
-    const longitude = parseFloat(lng as string);
-    const searchRadius = parseFloat(radius as string);
+    const latitude = parseFloat(lat);
+    const longitude = parseFloat(lng);
+    const searchRadius = parseFloat(radius);
 
     // BigQuery SQL using spatial function ST_DWithin
     // It finds listings within the searchRadius (meters) of the target point
@@ -94,9 +90,9 @@ app.get('/api/rent-listings', async (req, res) => {
     const { lat, lng, radius = 5000, domain = 'Retail' } = req.query;
     if (!lat || !lng) return res.status(400).json({ error: 'Missing lat or lng' });
 
-    const latitude  = parseFloat(lat as string);
-    const longitude = parseFloat(lng as string);
-    const searchRadius = parseFloat(radius as string);
+    const latitude  = parseFloat(lat);
+    const longitude = parseFloat(lng);
+    const searchRadius = parseFloat(radius);
 
     const query = `
       SELECT
@@ -183,7 +179,6 @@ app.post('/api/places', async (req, res) => {
       return res.status(googleRes.status).json({ success: false, error: data });
     }
 
-    // Return in { success, data } wrapper — matches what placesAPIService.ts expects
     res.json({ success: true, data });
   } catch (err) {
     const isTimeout = err.name === 'AbortError' || err.name === 'TimeoutError';
@@ -195,97 +190,234 @@ app.post('/api/places', async (req, res) => {
   }
 });
 
-// ── gracefulAuthFilter (Ported from frontend) ──────────────────────────────────
+
+// ── /api/analyze-location — Single Source of Truth ───────────────────────────
+//
+// This is THE canonical intelligence + scoring endpoint. Both the Intelligence
+// Panel (frontend) and the ADK Chat agent call this endpoint so they always
+// show identical numbers.
+//
+// Request body:  { lat, lng, radius, domainId }
+// Response:      { intel, scores, competitionLevel, marketGap }
+//   - intel  → DomainLocationIntelligence (competitors, corporates, apartments, etc.)
+//   - scores → CalculatedScores (demographicLoad, connectivity, competitorRatio, infrastructure, total)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Domain config (mirrors domains.ts) ───────────────────────────────────────
+const DOMAIN_CONFIG_SERVER = {
+  gym:        { competitorTypes: ['gym'],                                              infraTypes: ['cafe', 'restaurant'],                                            scoring: { demand: { weight: 0.30, saturationLimit: 18 }, connectivity: { weight: 0.15, saturationLimit: 8 }, gap: { weight: 0.30, saturationLimit: 6 }, infra: { weight: 0.25, saturationLimit: 15 } } },
+  restaurant: { competitorTypes: ['restaurant', 'cafe'],                               infraTypes: ['shopping_mall', 'movie_theater', 'tourist_attraction', 'night_club', 'university'], scoring: { demand: { weight: 0.35, saturationLimit: 20 }, connectivity: { weight: 0.20, saturationLimit: 8 }, gap: { weight: 0.30, saturationLimit: 5  }, infra: { weight: 0.15, saturationLimit: 12 } } },
+  bank:       { competitorTypes: ['bank', 'atm'],                                      infraTypes: ['shopping_mall', 'supermarket', 'department_store'],               scoring: { demand: { weight: 0.40, saturationLimit: 20 }, connectivity: { weight: 0.25, saturationLimit: 8 }, gap: { weight: 0.25, saturationLimit: 5  }, infra: { weight: 0.10, saturationLimit: 12 } } },
+  retail:     { competitorTypes: ['supermarket', 'department_store', 'convenience_store'], infraTypes: ['cafe', 'restaurant', 'shopping_mall', 'movie_theater'],      scoring: { demand: { weight: 0.35, saturationLimit: 20 }, connectivity: { weight: 0.20, saturationLimit: 8 }, gap: { weight: 0.25, saturationLimit: 6  }, infra: { weight: 0.20, saturationLimit: 14 } } },
+  cafe:       { competitorTypes: ['cafe', 'coffee_shop'],                              infraTypes: ['coworking_space', 'library'],                                     scoring: { demand: { weight: 0.35, saturationLimit: 18 }, connectivity: { weight: 0.20, saturationLimit: 8 }, gap: { weight: 0.25, saturationLimit: 5  }, infra: { weight: 0.20, saturationLimit: 12 } } },
+  coworking:  { competitorTypes: ['coworking_space'],                                  infraTypes: ['cafe', 'restaurant'],                                             scoring: { demand: { weight: 0.35, saturationLimit: 18 }, connectivity: { weight: 0.20, saturationLimit: 8 }, gap: { weight: 0.25, saturationLimit: 5  }, infra: { weight: 0.20, saturationLimit: 12 } } },
+};
+
+const CORPORATE_BLOCKLIST_SERVER = [
+  'hotel', 'mall', 'hospital', 'clinic', 'school', 'college', 'university',
+  'bank', 'atm', 'temple', 'church', 'mosque', 'salon', 'spa', 'supermarket',
+  'store', 'restaurant', 'cafe', 'pharmacy', 'medical', 'court', 'police',
+  'government', 'municipality', 'apartment', 'residency', 'residences',
+];
+
+// ── Scoring helpers (mirrors scoringEngine.ts exactly) ───────────────────────
+function linearNorm(count, limit) {
+  if (!limit || limit <= 0) return 0;
+  const r = (count / limit) * 100;
+  return isFinite(r) ? r : 0;
+}
+function clampScore(val) {
+  if (!isFinite(val) || isNaN(val)) return 0;
+  return Math.max(0, Math.min(100, Math.round(val)));
+}
+function getDistanceMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371e3;
+  const rad = Math.PI / 180;
+  const dLat = (lat2 - lat1) * rad;
+  const dLon = (lon2 - lon1) * rad;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+function calculateEffectiveCount(places, centerLat, centerLng, searchRadius, supportRating = false) {
+  if (!places || places.length === 0) return 0;
+  let total = 0;
+  for (const p of places) {
+    const loc = p.location;
+    if (!loc) { total += 0.5; continue; }
+    const pLat = loc.latitude ?? loc.lat;
+    const pLng = loc.longitude ?? loc.lng;
+    const dist = getDistanceMeters(centerLat, centerLng, pLat, pLng);
+    const clamped = Math.min(dist, searchRadius);
+    let weight = 1.0 - (0.6 * (clamped / Math.max(searchRadius, 1)));
+    if (supportRating && p.rating !== undefined && p.userRatingCount && p.userRatingCount >= 5) {
+      weight *= p.rating >= 3.5 ? 1.05 : 0.95;
+    }
+    total += weight;
+  }
+  return total;
+}
+// gracefulAuthFilter — mirrors placesAPIService.ts
 function gracefulAuthFilter(places) {
-    const strict = places.filter(p => (p.rating || 0) >= 3.8 && (p.userRatingCount || 0) >= 20);
-    if (strict.length >= 3) return { filtered: strict, tier: 1 };
-
-    const loose = places.filter(p => (p.rating || 0) >= 3.5 || (p.userRatingCount || 0) >= 5);
-    if (loose.length >= 3) return { filtered: loose, tier: 2 };
-
-    return { filtered: places, tier: 3 };
+  const strict = places.filter(p => (p.rating || 0) >= 3.8 && (p.userRatingCount || 0) >= 20);
+  if (strict.length >= 3) return strict;
+  const loose = places.filter(p => (p.rating || 0) >= 3.5 || (p.userRatingCount || 0) >= 5);
+  if (loose.length >= 3) return loose;
+  return places;
 }
 
-// ── /api/analyze-location — Centralized Intelligence API ─────────────────────
-// Executes frontend TS logic directly on the server for perfect sync.
+// Fetch one Places API page (internal, server-side — uses process.env key directly)
+async function serverFetchPlaces(apiKey, types, lat, lng, radiusMeters, primaryOnly = false, fieldMask = null) {
+  const BASIC  = 'places.id,places.displayName,places.location,places.types,places.businessStatus';
+  const ADV    = 'places.id,places.displayName,places.location,places.rating,places.userRatingCount,places.priceLevel,places.types,places.formattedAddress,places.businessStatus';
+  const mask   = fieldMask || ADV;
+  const body   = {
+    [primaryOnly ? 'includedPrimaryTypes' : 'includedTypes']: types,
+    locationRestriction: { circle: { center: { latitude: lat, longitude: lng }, radius: radiusMeters } },
+    maxResultCount: 20,
+    rankPreference: 'DISTANCE',
+  };
+  try {
+    const res = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': apiKey, 'X-Goog-FieldMask': mask },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(9000),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.places || []).filter(p => !p.businessStatus || p.businessStatus === 'OPERATIONAL');
+  } catch { return []; }
+}
+
+function runScoring(competitors, corporates, apartments, infra, transit, domainId, lat, lng, radius) {
+  const config = DOMAIN_CONFIG_SERVER[domainId];
+  if (!config) return null;
+
+  const competitorsCt = calculateEffectiveCount(competitors, lat, lng, radius, true);
+  const apartmentsCt  = calculateEffectiveCount(apartments,  lat, lng, radius, false);
+  const officesCt     = calculateEffectiveCount(corporates,  lat, lng, radius, false);
+  const transitPlaces = transit;
+  const transitCt     = calculateEffectiveCount(transitPlaces, lat, lng, radius, false);
+  const infraCt       = calculateEffectiveCount(infra, lat, lng, radius, true);
+
+  const metroPlaces = transitPlaces.filter(p => p.types?.some(t => t.includes('subway') || t.includes('light_rail')));
+  const busPlaces   = transitPlaces.filter(p => !p.types?.some(t => t.includes('subway') || t.includes('light_rail')));
+  const metroCt = calculateEffectiveCount(metroPlaces, lat, lng, radius, false);
+  const busCt   = calculateEffectiveCount(busPlaces,   lat, lng, radius, false);
+
+  // Demand score
+  let demandRaw = 0;
+  const dLimit = config.scoring.demand.saturationLimit;
+  if (domainId === 'gym') {
+    demandRaw = linearNorm(apartmentsCt, dLimit) * 0.55 + linearNorm(officesCt, dLimit) * 0.20 + linearNorm(infraCt, dLimit) * 0.25;
+  } else if (domainId === 'restaurant') {
+    const universities = infra.filter(p => p.types?.includes('university')).length || 0;
+    demandRaw = linearNorm(apartmentsCt, dLimit) * 0.35 + linearNorm(officesCt, dLimit) * 0.40 + linearNorm(universities, 5) * 0.15 + linearNorm(transitCt, 8) * 0.10;
+  } else if (domainId === 'bank') {
+    demandRaw = linearNorm(apartmentsCt, dLimit) * 0.50 + linearNorm(officesCt, dLimit) * 0.50;
+  } else {
+    demandRaw = linearNorm(apartmentsCt, dLimit) * 0.60 + linearNorm(officesCt, dLimit) * 0.40;
+  }
+  const demandScore = clampScore(demandRaw);
+
+  // Connectivity
+  const cLimit = config.scoring.connectivity.saturationLimit;
+  const connRaw = linearNorm(metroCt, cLimit) * 0.65 + linearNorm(busCt, cLimit * 2) * 0.35;
+  const connScore = clampScore(connRaw);
+
+  // Gap score
+  const demandUnits = apartmentsCt + (officesCt * 0.8) + (infraCt * 0.5);
+  const gapRatio    = demandUnits / Math.max(competitorsCt, 1);
+  const gapScore    = clampScore(linearNorm(gapRatio, config.scoring.gap.saturationLimit));
+
+  // Infra score
+  const infraScore = clampScore(linearNorm(infraCt, config.scoring.infra.saturationLimit));
+
+  // Weighted total + saturation penalty
+  let totalRaw = demandScore * config.scoring.demand.weight + connScore * config.scoring.connectivity.weight + gapScore * config.scoring.gap.weight + infraScore * config.scoring.infra.weight;
+  if (gapRatio < 1) totalRaw -= 25;
+  else if (gapRatio < 2) totalRaw -= 10;
+  const totalScore = clampScore(totalRaw);
+
+  return { demographicLoad: demandScore, connectivity: connScore, competitorRatio: gapScore, infrastructure: infraScore, total: totalScore };
+}
+
 app.post('/api/analyze-location', async (req, res) => {
   const apiKey = process.env.GOOGLE_MAPS_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: 'Places API key missing' });
+  if (!apiKey) return res.status(500).json({ error: 'API key not configured' });
 
-  const { lat, lng, radius, domainId } = req.body;
-  if (!lat || !lng || !domainId) return res.status(400).json({ error: 'Missing parameters' });
+  const { lat, lng, radius = 1000, domainId = 'gym' } = req.body;
+  if (!lat || !lng) return res.status(400).json({ error: 'lat and lng are required' });
 
-  const config = DOMAIN_CONFIG[domainId];
-  if (!config) return res.status(400).json({ error: 'Invalid domainId' });
+  const domainCfg = DOMAIN_CONFIG_SERVER[domainId];
+  if (!domainCfg) return res.status(400).json({ error: `Unknown domainId: ${domainId}` });
 
-  const BASIC_FIELD_MASK = 'places.id,places.displayName,places.location,places.types,places.businessStatus';
-  const ADV_FIELD_MASK = 'places.id,places.displayName,places.location,places.rating,places.userRatingCount,places.priceLevel,places.types,places.formattedAddress,places.businessStatus';
-
-  const mapPlace = p => ({
-      id: p.id,
-      displayName: p.displayName?.text || 'Unknown',
-      location: { lat: p.location?.latitude || 0, lng: p.location?.longitude || 0 },
-      rating: p.rating,
-      userRatingCount: p.userRatingCount,
-      priceLevel: p.priceLevel,
-      types: p.types || [],
-      formattedAddress: p.formattedAddress,
-      businessStatus: p.businessStatus,
-  });
-
-  const fetchPlaces = async (types, fieldMask) => {
-      if (types.length === 0) return [];
-      const body = {
-          includedTypes: types,
-          maxResultCount: 20,
-          locationRestriction: { circle: { center: { latitude: lat, longitude: lng }, radius } }
-      };
-      const response = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
-          method: 'POST',
-          headers: {
-              'Content-Type': 'application/json',
-              'X-Goog-Api-Key': apiKey,
-              'X-Goog-FieldMask': fieldMask,
-          },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(8000)
-      });
-      const data = await response.json();
-      return (data.places || []).map(mapPlace).filter(p => !p.businessStatus || p.businessStatus === 'OPERATIONAL');
-  };
+  const BASIC_MASK = 'places.id,places.displayName,places.location,places.types,places.businessStatus';
 
   try {
-      const [compRaw, corpRaw, infraRaw, transitRaw, aptRaw] = await Promise.all([
-          fetchPlaces(config.competitorTypes, ADV_FIELD_MASK),
-          fetchPlaces(['corporate_office', 'coworking_space'], BASIC_FIELD_MASK),
-          fetchPlaces(config.infraTypes, BASIC_FIELD_MASK),
-          fetchPlaces(['bus_station', 'bus_stop', 'light_rail_station', 'subway_station'], BASIC_FIELD_MASK),
-          fetchPlaces(['apartment_complex'], BASIC_FIELD_MASK),
-      ]);
+    // Fetch all POI categories in parallel — same calls as getDomainIntelligence()
+    const [competitorsRaw, corporateRaw, infraRaw, transitRaw, apartmentRaw] = await Promise.all([
+      serverFetchPlaces(apiKey, domainCfg.competitorTypes, lat, lng, radius, false),
+      serverFetchPlaces(apiKey, ['corporate_office', 'coworking_space'], lat, lng, radius, true, BASIC_MASK),
+      domainCfg.infraTypes.length > 0 ? serverFetchPlaces(apiKey, domainCfg.infraTypes, lat, lng, radius, false, BASIC_MASK) : Promise.resolve([]),
+      serverFetchPlaces(apiKey, ['bus_station', 'bus_stop', 'light_rail_station', 'subway_station'], lat, lng, radius, false, BASIC_MASK),
+      serverFetchPlaces(apiKey, ['apartment_complex'], lat, lng, radius, false, BASIC_MASK),
+    ]);
 
-      // Apply filters identical to frontend
-      const CORPORATE_BLOCKLIST = ['hotel', 'mall', 'hospital', 'clinic', 'school', 'college', 'university', 'bank', 'atm', 'temple', 'church', 'mosque', 'salon', 'spa', 'supermarket', 'store', 'restaurant', 'cafe', 'pharmacy', 'medical', 'court', 'police', 'government', 'municipality', 'apartment', 'residency', 'residences'];
-      const corporates = corpRaw.filter(p => !CORPORATE_BLOCKLIST.some(word => p.displayName.toLowerCase().includes(word)));
-      const { filtered: competitors } = gracefulAuthFilter(compRaw);
+    // Apply the exact same filters as the frontend
+    const competitors = gracefulAuthFilter(competitorsRaw);
+    const corporates  = corporateRaw.filter(p => !CORPORATE_BLOCKLIST_SERVER.some(w => (p.displayName?.text || '').toLowerCase().includes(w)));
+    const infra       = infraRaw;
+    const transit     = transitRaw;
+    const apartments  = apartmentRaw;
 
-      const intel: any = {
-          competitors: { total: competitors.length, places: competitors },
-          corporateOffices: { total: corporates.length, places: corporates },
-          infraSynergy: { total: infraRaw.length, places: infraRaw },
-          transitStations: { total: transitRaw.length, places: transitRaw },
-          apartments: { total: aptRaw.length, places: aptRaw },
-          competitionLevel: 'Unknown',
-          marketGap: 'Unknown',
-      };
+    console.log(`[analyze-location] ${domainId} @ [${lat},${lng}] r=${radius}: ${competitorsRaw.length}→${competitors.length} competitors, ${corporates.length} corp, ${apartments.length} apt, ${transit.length} transit`);
 
-      const scores = calculateDomainScores(intel, domainId, radius);
+    // High-rated competitors stat for UI
+    const highRated   = competitors.filter(p => (p.rating || 0) >= 4.0);
+    const ratings     = competitors.filter(p => p.rating).map(p => p.rating);
+    const avgRating   = ratings.length > 0 ? parseFloat((ratings.reduce((s, r) => s + r, 0) / ratings.length).toFixed(1)) : 0;
 
-      res.json({ success: true, intel, scores });
-  } catch (error) {
-      console.error('Analyze Location API error:', error);
-      res.status(502).json({ error: 'Failed to analyze location' });
+    // Competition level (same thresholds as frontend)
+    let competitionLevel;
+    if (competitors.length <= 3)       competitionLevel = 'LOW';
+    else if (competitors.length <= 8)  competitionLevel = 'MEDIUM';
+    else if (competitors.length <= 15) competitionLevel = 'HIGH';
+    else                               competitionLevel = 'VERY_HIGH';
+
+    // Market gap via saturation ratio (same as frontend)
+    const fullDemand = corporates.length + (apartments.length * 0.7) + (transit.length * 0.8) + (infra.length * 0.5);
+    const estimatedCapacity = Math.max(5, fullDemand * 1.5);
+    const saturationRatio = competitors.length / estimatedCapacity;
+    let marketGap;
+    if (competitors.length === 0)      marketGap = 'UNTAPPED';
+    else if (saturationRatio < 0.25)   marketGap = 'OPPORTUNITY';
+    else if (saturationRatio < 0.6)    marketGap = 'COMPETITIVE';
+    else                               marketGap = 'SATURATED';
+
+    // Build the intel shape that matches DomainLocationIntelligence
+    const intel = {
+      competitors:    { total: competitors.length, highRated: highRated.length, averageRating: avgRating, places: competitors },
+      corporateOffices: { total: corporates.length, places: corporates },
+      apartments:     { total: apartments.length,   places: apartments },
+      infraSynergy:   { total: infra.length,        places: infra },
+      transitStations:{ total: transit.length,      places: transit },
+      competitionLevel,
+      marketGap,
+    };
+
+    // Run the canonical scoring engine
+    const scores = runScoring(competitors, corporates, apartments, infra, transit, domainId, lat, lng, radius);
+
+    res.json({ intel, scores });
+
+  } catch (err) {
+    console.error('[analyze-location] Error:', err.message);
+    res.status(502).json({ error: 'Failed to analyze location' });
   }
 });
+
+
 
 
 // ── /api/chat — Geo-Intel ADK Agent proxy ────────────────────────────────────
