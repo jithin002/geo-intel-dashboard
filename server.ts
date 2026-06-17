@@ -1,7 +1,13 @@
-const express = require('express');
-const cors = require('cors');
-const { BigQuery } = require('@google-cloud/bigquery');
-const path = require('path');
+import express from 'express';
+import cors from 'cors';
+import { BigQuery } from '@google-cloud/bigquery';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { DOMAIN_CONFIG } from './domains.js';
+import { calculateDomainScores } from './services/scoringEngine.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -14,9 +20,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'dist')));
 
 // Initialize BigQuery client
-// Uses Application Default Credentials in production on Cloud Run,
-// or local service account JSON for local development.
-const bigQueryConfig = { projectId: 'testing-jithin' };
+const bigQueryConfig: any = { projectId: 'testing-jithin' };
 if (process.env.NODE_ENV !== 'production') {
   bigQueryConfig.keyFilename = path.join(__dirname, 'rent-scraper', 'service-account.json');
 }
@@ -31,9 +35,9 @@ app.get('/api/rent-insights', async (req, res) => {
     }
 
     // Convert string query params to numbers
-    const latitude = parseFloat(lat);
-    const longitude = parseFloat(lng);
-    const searchRadius = parseFloat(radius);
+    const latitude = parseFloat(lat as string);
+    const longitude = parseFloat(lng as string);
+    const searchRadius = parseFloat(radius as string);
 
     // BigQuery SQL using spatial function ST_DWithin
     // It finds listings within the searchRadius (meters) of the target point
@@ -90,9 +94,9 @@ app.get('/api/rent-listings', async (req, res) => {
     const { lat, lng, radius = 5000, domain = 'Retail' } = req.query;
     if (!lat || !lng) return res.status(400).json({ error: 'Missing lat or lng' });
 
-    const latitude  = parseFloat(lat);
-    const longitude = parseFloat(lng);
-    const searchRadius = parseFloat(radius);
+    const latitude  = parseFloat(lat as string);
+    const longitude = parseFloat(lng as string);
+    const searchRadius = parseFloat(radius as string);
 
     const query = `
       SELECT
@@ -188,6 +192,98 @@ app.post('/api/places', async (req, res) => {
       success: false,
       error: isTimeout ? 'Places API request timed out' : 'Failed to reach Google Places API',
     });
+  }
+});
+
+// ── gracefulAuthFilter (Ported from frontend) ──────────────────────────────────
+function gracefulAuthFilter(places) {
+    const strict = places.filter(p => (p.rating || 0) >= 3.8 && (p.userRatingCount || 0) >= 20);
+    if (strict.length >= 3) return { filtered: strict, tier: 1 };
+
+    const loose = places.filter(p => (p.rating || 0) >= 3.5 || (p.userRatingCount || 0) >= 5);
+    if (loose.length >= 3) return { filtered: loose, tier: 2 };
+
+    return { filtered: places, tier: 3 };
+}
+
+// ── /api/analyze-location — Centralized Intelligence API ─────────────────────
+// Executes frontend TS logic directly on the server for perfect sync.
+app.post('/api/analyze-location', async (req, res) => {
+  const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'Places API key missing' });
+
+  const { lat, lng, radius, domainId } = req.body;
+  if (!lat || !lng || !domainId) return res.status(400).json({ error: 'Missing parameters' });
+
+  const config = DOMAIN_CONFIG[domainId];
+  if (!config) return res.status(400).json({ error: 'Invalid domainId' });
+
+  const BASIC_FIELD_MASK = 'places.id,places.displayName,places.location,places.types,places.businessStatus';
+  const ADV_FIELD_MASK = 'places.id,places.displayName,places.location,places.rating,places.userRatingCount,places.priceLevel,places.types,places.formattedAddress,places.businessStatus';
+
+  const mapPlace = p => ({
+      id: p.id,
+      displayName: p.displayName?.text || 'Unknown',
+      location: { lat: p.location?.latitude || 0, lng: p.location?.longitude || 0 },
+      rating: p.rating,
+      userRatingCount: p.userRatingCount,
+      priceLevel: p.priceLevel,
+      types: p.types || [],
+      formattedAddress: p.formattedAddress,
+      businessStatus: p.businessStatus,
+  });
+
+  const fetchPlaces = async (types, fieldMask) => {
+      if (types.length === 0) return [];
+      const body = {
+          includedTypes: types,
+          maxResultCount: 20,
+          locationRestriction: { circle: { center: { latitude: lat, longitude: lng }, radius } }
+      };
+      const response = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
+          method: 'POST',
+          headers: {
+              'Content-Type': 'application/json',
+              'X-Goog-Api-Key': apiKey,
+              'X-Goog-FieldMask': fieldMask,
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(8000)
+      });
+      const data = await response.json();
+      return (data.places || []).map(mapPlace).filter(p => !p.businessStatus || p.businessStatus === 'OPERATIONAL');
+  };
+
+  try {
+      const [compRaw, corpRaw, infraRaw, transitRaw, aptRaw] = await Promise.all([
+          fetchPlaces(config.competitorTypes, ADV_FIELD_MASK),
+          fetchPlaces(['corporate_office', 'coworking_space'], BASIC_FIELD_MASK),
+          fetchPlaces(config.infraTypes, BASIC_FIELD_MASK),
+          fetchPlaces(['bus_station', 'bus_stop', 'light_rail_station', 'subway_station'], BASIC_FIELD_MASK),
+          fetchPlaces(['apartment_complex'], BASIC_FIELD_MASK),
+      ]);
+
+      // Apply filters identical to frontend
+      const CORPORATE_BLOCKLIST = ['hotel', 'mall', 'hospital', 'clinic', 'school', 'college', 'university', 'bank', 'atm', 'temple', 'church', 'mosque', 'salon', 'spa', 'supermarket', 'store', 'restaurant', 'cafe', 'pharmacy', 'medical', 'court', 'police', 'government', 'municipality', 'apartment', 'residency', 'residences'];
+      const corporates = corpRaw.filter(p => !CORPORATE_BLOCKLIST.some(word => p.displayName.toLowerCase().includes(word)));
+      const { filtered: competitors } = gracefulAuthFilter(compRaw);
+
+      const intel: any = {
+          competitors: { total: competitors.length, places: competitors },
+          corporateOffices: { total: corporates.length, places: corporates },
+          infraSynergy: { total: infraRaw.length, places: infraRaw },
+          transitStations: { total: transitRaw.length, places: transitRaw },
+          apartments: { total: aptRaw.length, places: aptRaw },
+          competitionLevel: 'Unknown',
+          marketGap: 'Unknown',
+      };
+
+      const scores = calculateDomainScores(intel, domainId, radius);
+
+      res.json({ success: true, intel, scores });
+  } catch (error) {
+      console.error('Analyze Location API error:', error);
+      res.status(502).json({ error: 'Failed to analyze location' });
   }
 });
 

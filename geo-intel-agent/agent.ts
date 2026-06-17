@@ -18,7 +18,9 @@ import { z } from 'zod';
 // Config
 // ─────────────────────────────────────────────────────────────────────────────
 
-const PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY || '';
+const PLACES_API_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 
 // Field masks
 const BASIC_MASK = 'places.id,places.displayName,places.location,places.types,places.businessStatus';
@@ -190,96 +192,37 @@ async function fetchLocationIntel(
   lng: number,
   radius: number,
   domain: string
-): Promise<{
-  competitors: any[];
-  corporates: any[];
-  cafes: any[];
-  transit: any[];
-  apartments: any[];
-  infra: any[];
-}> {
-  const domainCfg = DOMAIN_TYPES[domain] || DOMAIN_TYPES['gym'];
-
-  const [competitors, corporates, cafes, transit, apartments, infra] = await Promise.all([
-    nearbySearch(lat, lng, radius, domainCfg.competitors),
-    nearbySearch(lat, lng, radius, ['corporate_office', 'coworking_space'], BASIC_MASK),
-    domain !== 'cafe'
-      ? nearbySearch(lat, lng, radius, ['cafe', 'coffee_shop'])
-      : Promise.resolve([]),
-    nearbySearch(
-      lat, lng, radius,
-      ['subway_station', 'light_rail_station', 'bus_station', 'bus_stop'],
-      BASIC_MASK
-    ),
-    nearbySearch(lat, lng, radius, ['apartment_complex'], BASIC_MASK),
-    domainCfg.infra.length > 0
-      ? nearbySearch(lat, lng, radius, domainCfg.infra, BASIC_MASK)
-      : Promise.resolve([]),
-  ]);
-
-  // Filter corporates using blocklist
-  const BLOCKLIST = ['hotel', 'mall', 'hospital', 'school', 'college', 'bank', 'temple', 'salon'];
-  const filteredCorp = corporates.filter(
-    (p: any) => !BLOCKLIST.some((w) => (p.displayName?.text || '').toLowerCase().includes(w))
-  );
+): Promise<any> {
+  const url = `${BACKEND_URL}/api/analyze-location`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lat, lng, radius, domainId: domain })
+  });
+  if (!res.ok) throw new Error(`Analyze Location API returned ${res.status}`);
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
 
   return {
-    competitors: domain === 'gym' 
-      ? competitors.filter((p: any) => (p.rating || 0) >= 3.5 || (p.userRatingCount || 0) >= 5)
-      : competitors,
-    corporates: filteredCorp,
-    cafes,
-    transit,
-    apartments,
-    infra,
+    intel: data.intel,
+    scores: data.scores
   };
-}
-
-function scoreLocation(intel: ReturnType<typeof fetchLocationIntel> extends Promise<infer T> ? T : never, domain: string) {
-  const { competitors, corporates, cafes, transit, apartments, infra } = intel;
-
-  // Demand score (0–40): residential + corporate density
-  const demandRaw = Math.min(40, (apartments.length * 2) + (corporates.length * 1.5));
-
-  // Competition gap (0–30): fewer competitors = higher score
-  const compPenalty = Math.min(30, competitors.length * 3);
-  const gapScore = Math.max(0, 30 - compPenalty);
-
-  // Connectivity (0–15): transit stations
-  const connScore = Math.min(15, transit.length * 3);
-
-  // Lifestyle/infra (0–15): cafes + domain-specific infra
-  const vibeScore = Math.min(15, ((cafes.length + infra.length) * 1.5));
-
-  const total = Math.round(demandRaw + gapScore + connScore + vibeScore);
-
-  let competitionLevel: string;
-  if (competitors.length <= 3) competitionLevel = 'Low';
-  else if (competitors.length <= 7) competitionLevel = 'Medium';
-  else if (competitors.length <= 12) competitionLevel = 'High';
-  else competitionLevel = 'Very High';
-
-  let marketGap: string;
-  const demandUnits = corporates.length + apartments.length;
-  const ratio = competitors.length > 0 ? demandUnits / competitors.length : demandUnits;
-  if (competitors.length === 0) marketGap = 'Untapped';
-  else if (ratio > 4) marketGap = 'Opportunity';
-  else if (ratio > 2) marketGap = 'Competitive';
-  else marketGap = 'Saturated';
-
-  return { total, competitionLevel, marketGap, demandRaw, gapScore, connScore, vibeScore };
 }
 
 function formatIntelReport(
   location: string,
   lat: number,
   lng: number,
-  intel: Awaited<ReturnType<typeof fetchLocationIntel>>,
+  data: Awaited<ReturnType<typeof fetchLocationIntel>>,
   domain: string
 ): string {
   const domainCfg = DOMAIN_TYPES[domain] || DOMAIN_TYPES['gym'];
-  const scores = scoreLocation(intel, domain);
-  const { competitors, corporates, cafes, transit, apartments, infra } = intel;
+  const { intel, scores } = data;
+  const competitors = intel.competitors.places || [];
+  const corporates = intel.corporateOffices.places || [];
+  const transit = intel.transitStations.places || [];
+  const apartments = intel.apartments.places || [];
+  const infra = intel.infraSynergy.places || [];
 
   const highRated = competitors.filter((p: any) => (p.rating || 0) >= 4.0);
   const avgRating =
@@ -291,18 +234,18 @@ function formatIntelReport(
   let report = `LOCATION: ${location}\n`;
   report += `DOMAIN: ${domainCfg.label}\n`;
   report += `SITE SCORE: ${scores.total}/100\n`;
-  report += `  - Demand: ${Math.round(scores.demandRaw)}/40\n`;
-  report += `  - Competition Gap: ${Math.round(scores.gapScore)}/30\n`;
-  report += `  - Connectivity: ${Math.round(scores.connScore)}/15\n`;
-  report += `  - Lifestyle/Infra: ${Math.round(scores.vibeScore)}/15\n\n`;
+  report += `  - Demographic Load: ${Math.round(scores.demographicLoad)}/100\n`;
+  report += `  - Connectivity: ${Math.round(scores.connectivity)}/100\n`;
+  report += `  - Competitor Ratio: ${Math.round(scores.competitorRatio)}/100\n`;
+  report += `  - Infrastructure: ${Math.round(scores.infrastructure)}/100\n\n`;
 
   report += `AREA INTELLIGENCE:\n`;
-  report += `  Competitors (${domainCfg.label}): ${competitors.length} total`;
+  report += `  Competitors (${domainCfg.label}): ${intel.competitors.total} total`;
   if (avgRating) report += `, ${highRated.length} rated 4+ stars, average rating ${avgRating}`;
   report += `\n`;
   report += `  Corporate Offices: ${corporates.length}\n`;
   report += `  Residential Complexes: ${apartments.length}\n`;
-  if (domain !== 'cafe') report += `  Cafes / Coffee Shops: ${cafes.length}\n`;
+  if (domain !== 'cafe' && domain !== 'restaurant') report += `  Cafes (Infra): ${infra.length}\n`;
   if (infra.length > 0) report += `  Domain Infra / Synergy Points: ${infra.length}\n`;
   report += `  Transit Stations: ${transit.length}\n`;
   report += `  Competition Level: ${scores.competitionLevel}\n`;
@@ -347,8 +290,8 @@ const analyzeLocation = new FunctionTool({
       .optional()
       .describe('Search radius in meters. Default is 1000 (1 km).')
       .default(1000),
-  }),
-  execute: async ({ location, domain, radius_meters }) => {
+  }) as any,
+  execute: async ({ location, domain, radius_meters }: any) => {
     const radius = radius_meters || 1000;
 
     // Guard: unsupported domain — inform the user, skip map analysis
@@ -383,9 +326,9 @@ const analyzeLocation = new FunctionTool({
     console.log(`📍 Geocoded "${location}" → [${lat}, ${lng}]`);
 
     // Fetch intelligence
-    const intel = await fetchLocationIntel(lat, lng, radius, domain);
-    const scores = scoreLocation(intel, domain);
-    const report = formatIntelReport(location, lat, lng, intel, domain);
+    const data = await fetchLocationIntel(lat, lng, radius, domain);
+    const { intel, scores } = data;
+    const report = formatIntelReport(location, lat, lng, data, domain);
 
     return {
       status: 'success',
@@ -394,13 +337,12 @@ const analyzeLocation = new FunctionTool({
       report,
       scores,
       summary: {
-        competitors: intel.competitors.length,
-        corporates: intel.corporates.length,
-        apartments: intel.apartments.length,
-        transit: intel.transit.length,
+        competitors: intel.competitors.total,
+        corporates: intel.corporateOffices.total,
+        apartments: intel.apartments.total,
+        transit: intel.transitStations.total,
         siteScore: scores.total,
-        competitionLevel: scores.competitionLevel,
-        marketGap: scores.marketGap,
+        marketGap: 'See report',
       },
     };
   },
@@ -418,15 +360,15 @@ const compareLocations = new FunctionTool({
     'Use this when the user asks "which is better", "compare X vs Y", or "X or Y for my business". ' +
     'Only supports: gym, restaurant, cafe, retail, bank, coworking.',
   parameters: z.object({
-    location1: z.string().describe('First Bangalore area to compare.'),
-    location2: z.string().describe('Second Bangalore area to compare.'),
+    location1: z.string().describe('First Bangalore area (e.g. "Koramangala").'),
+    location2: z.string().describe('Second Bangalore area (e.g. "HSR Layout").'),
     domain: z
       .enum(['gym', 'restaurant', 'cafe', 'retail', 'bank', 'coworking'])
-      .describe('Business domain / type being evaluated.')
+      .describe('Business domain being compared.')
       .default('gym'),
     radius_meters: z.number().optional().default(1000),
-  }),
-  execute: async ({ location1, location2, domain, radius_meters }) => {
+  }) as any,
+  execute: async ({ location1, location2, domain, radius_meters }: any) => {
     const radius = radius_meters || 1000;
 
     // Guard: unsupported domain
@@ -462,16 +404,16 @@ const compareLocations = new FunctionTool({
     console.log(`⚖️  Comparing "${location1}" [${coords1}] vs "${location2}" [${coords2}]`);
 
     // Fetch intelligence for both in parallel
-    const [intel1, intel2] = await Promise.all([
+    const [data1, data2] = await Promise.all([
       fetchLocationIntel(coords1[0], coords1[1], radius, domain),
       fetchLocationIntel(coords2[0], coords2[1], radius, domain),
     ]);
 
-    const scores1 = scoreLocation(intel1, domain);
-    const scores2 = scoreLocation(intel2, domain);
+    const { scores: scores1 } = data1;
+    const { scores: scores2 } = data2;
 
-    const report1 = formatIntelReport(location1, coords1[0], coords1[1], intel1, domain);
-    const report2 = formatIntelReport(location2, coords2[0], coords2[1], intel2, domain);
+    const report1 = formatIntelReport(location1, coords1[0], coords1[1], data1, domain);
+    const report2 = formatIntelReport(location2, coords2[0], coords2[1], data2, domain);
 
     const winner = scores1.total >= scores2.total ? location1 : location2;
     const winnerScore = Math.max(scores1.total, scores2.total);
@@ -522,8 +464,8 @@ const searchNearby = new FunctionTool({
         'Google Places type to search for (e.g. "gym", "cafe", "restaurant", "coworking_space", "apartment_complex").'
       ),
     radius_meters: z.number().optional().default(1500),
-  }),
-  execute: async ({ location, place_type, radius_meters }) => {
+  }) as any,
+  execute: async ({ location, place_type, radius_meters }: any) => {
     const radius = radius_meters || 1500;
 
     const coords = await geocodeLocation(location);

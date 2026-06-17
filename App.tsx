@@ -315,73 +315,37 @@ const App: React.FC<{
         const effectiveCluster = overrideCluster !== undefined ? overrideCluster : selectedCluster;
 
         try {
-            const domain = DOMAIN_CONFIG[domainToUse];
-            let realScores: any = null;
-            let currentTotalScore = 0;
+            const response = await fetch('/api/analyze-location', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ lat: analysisPos[0], lng: analysisPos[1], radius: searchRadius, domainId: domainToUse })
+            });
+            const data = await response.json();
+            const intel = data.intel;
+            const realScores = data.scores;
+            let currentTotalScore = realScores.total;
 
-            if (domainToUse === 'gym') {
-                const intel = await getLocationIntelligence(analysisPos[0], analysisPos[1], searchRadius);
-                setRealPOIs({
-                    gyms: intel.gyms.places,
-                    cafes: intel.cafesRestaurants.places,
-                    corporates: intel.corporateOffices.places,
-                    transit: intel.transitStations.places,
-                    apartments: intel.apartments.places,
-                    parks: []
-                });
+            setRealPOIs({
+                gyms: intel.competitors.places,
+                cafes: intel.infraSynergy.places,
+                corporates: intel.corporateOffices.places,
+                transit: intel.transitStations.places,
+                apartments: intel.apartments.places,
+                parks: []
+            });
 
-                // USE WEB WORKER FOR SCORING
-                realScores = await calculateDomainScoresAsync(intel, domainToUse, searchRadius);
-                currentTotalScore = realScores.total;
+            setScores(realScores);
 
-                setScores(realScores);
-
-                if (effectiveCluster) {
-                    const opportunityScore = realScores.total / 100;
-                    const finalScore = opportunityScore;
-                    const demographicLoad = realScores.demographicLoad;
-                    const competitorDensity = intel.gyms.total;
-                    let growthRate = 0;
-                    if (intel.marketGap === 'UNTAPPED') growthRate = 0.15;
-                    else if (intel.marketGap === 'OPPORTUNITY') growthRate = 0.10;
-                    else if (intel.marketGap === 'COMPETITIVE') growthRate = 0.05;
-                    else growthRate = 0.02;
-                    if (demographicLoad > 70) growthRate += 0.03;
-                    if (intel.corporateOffices.total > 10) growthRate += 0.02;
-                    setWardScores(prev => ({ ...prev, [effectiveCluster]: { opportunityScore, finalScore, growthRate, demographicLoad, competitorDensity } }));
-                }
-
-                const recommendation = generateDataDrivenRecommendation(intel, realScores);
-                setAiInsight(recommendation);
-
-            } else {
-                const intel = await getDomainIntelligence(analysisPos[0], analysisPos[1], searchRadius, domain.competitorTypes, domain.infraTypes);
-                setRealPOIs({
-                    gyms: intel.competitors.places,
-                    cafes: intel.infraSynergy.places,
-                    corporates: intel.corporateOffices.places,
-                    transit: intel.transitStations.places,
-                    apartments: intel.apartments.places,
-                    parks: []
-                });
-
-                // USE WEB WORKER FOR SCORING
-                realScores = await calculateDomainScoresAsync(intel, domainToUse, searchRadius);
-                currentTotalScore = realScores.total;
-
-                if (effectiveCluster) {
-                    const opportunityScore = realScores.total / 100;
-                    const finalScore = opportunityScore;
-                    let growthRate = intel.marketGap === 'UNTAPPED' ? 0.15 :
-                        intel.marketGap === 'OPPORTUNITY' ? 0.10 :
-                            intel.marketGap === 'COMPETITIVE' ? 0.05 : 0.02;
-                    if (realScores.demographicLoad > 70) growthRate += 0.03;
-                    setWardScores(prev => ({ ...prev, [effectiveCluster]: { opportunityScore, finalScore, growthRate, demographicLoad: realScores.demographicLoad, competitorDensity: intel.competitors.total } }));
-                }
-
-                const recommendation = generateDomainRecommendation(intel, domainToUse);
-                setAiInsight(recommendation);
+            if (effectiveCluster) {
+                const opportunityScore = realScores.total / 100;
+                const finalScore = opportunityScore;
+                let growthRate = 0.05;
+                if (realScores.demographicLoad > 70) growthRate += 0.03;
+                setWardScores(prev => ({ ...prev, [effectiveCluster]: { opportunityScore, finalScore, growthRate, demographicLoad: realScores.demographicLoad, competitorDensity: intel.competitors.total } }));
             }
+
+            // For AI Insight, we can use a simpler recommendation generator or keep the old one
+            setAiInsight(`Analysis complete for ${domainToUse}. Score: ${realScores.total}/100.`);
 
             const currentCustomParams = customParamsRef.current;
             if (currentCustomParams.length > 0) {
