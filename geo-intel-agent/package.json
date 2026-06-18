@@ -2,7 +2,7 @@
   "name": "geo-intel-agent",
   "version": "1.0.0",
   "type": "module",
-  "main": "agent.ts",
+  "main": "agent.js",
   "scripts": {
     "dev": "npx adk web",
     "run-agent": "npx adk run agent.ts"
