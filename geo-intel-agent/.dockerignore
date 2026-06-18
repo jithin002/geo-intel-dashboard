@@ -1,0 +1,5 @@
+node_modules
+.adk
+dist
+*.log
+.env
