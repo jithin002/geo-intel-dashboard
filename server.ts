@@ -454,10 +454,32 @@ const ADK_AGENT    = 'geo_intel_agent'; // matches name: in LlmAgent({name: ...}
 const DEFAULT_USER = 'geo-intel-user';
 
 app.post('/api/chat', async (req, res) => {
-  const { message, sessionId, userId = DEFAULT_USER } = req.body;
+  const { message, sessionId, userId = DEFAULT_USER, context } = req.body;
 
   if (!message || typeof message !== 'string' || !message.trim()) {
     return res.status(400).json({ error: 'message is required' });
+  }
+
+  // ── Inject the panel's live pin / domain / radius into the message ──────────
+  // The agent otherwise re-geocodes the area NAME (analyzing a slightly different
+  // point) and defaults to gym / 1 km, causing its numbers to drift from the
+  // Intelligence Panel. By handing the LLM the exact pin coordinates + active
+  // domain + radius, "analyze this location" hits the identical inputs the panel
+  // used — so the two agree. This preamble is sent only to the agent, never shown
+  // to the user.
+  let outgoingMessage = message.trim();
+  const pin = context?.currentLocation;
+  if (Array.isArray(pin) && pin.length === 2 &&
+      typeof pin[0] === 'number' && typeof pin[1] === 'number') {
+    const dom = context?.domain || 'gym';
+    const rad = context?.radius || 1000;
+    outgoingMessage +=
+      `\n\n[CURRENT MAP CONTEXT — The user has a map pin dropped and an active analysis panel. ` +
+      `When the user refers to "this location", "here", "this area", "the current pin", "this spot", ` +
+      `or does not name a specific Bangalore area, analyze THIS pin by calling analyze_location with ` +
+      `these exact values: lat=${pin[0]}, lng=${pin[1]}, domain=${dom}, radius_meters=${rad}. ` +
+      `If the user explicitly names a different area, geocode that area by name instead, but keep ` +
+      `domain=${dom} and radius_meters=${rad} unless the user asks to change them.]`;
   }
 
   try {
@@ -503,7 +525,7 @@ app.post('/api/chat', async (req, res) => {
         sessionId:  activeSessionId,
         newMessage: {
           role:  'user',
-          parts: [{ text: message.trim() }],
+          parts: [{ text: outgoingMessage }],
         },
       }),
       signal: controller.signal,

@@ -52,6 +52,14 @@ export async function processUserQueryADK(
                 message: userMessage,
                 sessionId: adkSessionId,  // null on first message → ADK creates one
                 userId: 'geo-intel-user',
+                // Forward the panel's live state so the agent analyzes the SAME
+                // pin / domain / radius the Intelligence Panel is showing
+                // (otherwise it re-geocodes the name and defaults to gym / 1 km).
+                context: {
+                    currentLocation: context.currentLocation,
+                    domain: context.domain,
+                    radius: context.radius,
+                },
             }),
         });
 

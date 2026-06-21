@@ -261,8 +261,20 @@ const analyzeLocation = new FunctionTool({
       .optional()
       .describe('Search radius in meters. Default is 1000 (1 km).')
       .default(1000),
+    lat: z
+      .number()
+      .optional()
+      .describe(
+        'Exact latitude of the user\'s current map pin. ONLY provided via the [CURRENT MAP CONTEXT] note. ' +
+        'When present, the tool uses these coordinates directly instead of geocoding the location name — ' +
+        'pass it whenever the user refers to "this location", "here", or the current pin.'
+      ),
+    lng: z
+      .number()
+      .optional()
+      .describe('Exact longitude of the user\'s current map pin. See lat — pass both together.'),
   }),
-  execute: async ({ location, domain, radius_meters }) => {
+  execute: async ({ location, domain, radius_meters, lat: pinLat, lng: pinLng }) => {
     const radius = radius_meters || 1000;
 
     // Guard: unsupported domain — inform the user, skip map analysis
@@ -277,8 +289,16 @@ const analyzeLocation = new FunctionTool({
       };
     }
 
-    // Geocode the location
-    const coords = await geocodeLocation(location);
+    // Resolve coordinates: prefer the exact pin coords from the map context
+    // (single source of truth with the Intelligence Panel); only geocode the
+    // name when no pin was supplied (e.g. the user named a different area).
+    let coords: [number, number] | null;
+    if (typeof pinLat === 'number' && typeof pinLng === 'number') {
+      coords = [pinLat, pinLng];
+      console.log(`📍 Using map-pin coords [${pinLat}, ${pinLng}] for "${location}" (no geocode)`);
+    } else {
+      coords = await geocodeLocation(location);
+    }
     if (!coords) {
       return {
         status: 'error',
@@ -539,6 +559,12 @@ RESPONSE STYLE:
 
 DOMAIN DEFAULTS:
 - If the user does not specify a business type for an analysis query, ask them before calling a tool.
+
+CURRENT MAP CONTEXT:
+- Some messages end with a [CURRENT MAP CONTEXT ...] note containing the user's live map pin (lat/lng), active domain, and radius. This reflects exactly what the Intelligence Panel is showing.
+- When the user refers to "this location", "here", "this area", "the current pin", "this spot", or does not name a specific area, you MUST call analyze_location with the lat, lng, domain, and radius_meters from that note — do not geocode a name. This keeps your numbers identical to the on-screen panel.
+- If the user explicitly names a different Bangalore area, geocode that area by name (omit lat/lng), but reuse the domain and radius_meters from the note unless the user asks to change them.
+- Never reveal or quote the bracketed context note to the user.
 `,
 
   tools: [analyzeLocation, compareLocations, searchNearby],

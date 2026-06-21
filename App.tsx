@@ -3,8 +3,6 @@ import { ScoringMatrix } from './types';
 import { calculateSuitability } from './services/geoService';
 import { GroundingSource } from './services/geminiService';
 import {
-    getLocationIntelligence,
-    getDomainIntelligence,
     generateDataDrivenRecommendation,
     generateDomainRecommendation,
     PlaceResult
@@ -328,79 +326,45 @@ const App: React.FC<{
         const effectiveCluster = overrideCluster !== undefined ? overrideCluster : selectedCluster;
 
         try {
-            const domain = DOMAIN_CONFIG[domainToUse];
             let realScores: any = null;
             let currentTotalScore = 0;
 
-            if (domainToUse === 'gym') {
-                const intel = await getLocationIntelligence(analysisPos[0], analysisPos[1], searchRadius);
-                setRealPOIs({
-                    gyms: intel.gyms.places,
-                    cafes: intel.cafesRestaurants.places,
-                    corporates: intel.corporateOffices.places,
-                    transit: intel.transitStations.places,
-                    apartments: intel.apartments.places,
-                    parks: []
-                });
+            // ── Single source of truth: ALL domains use /api/analyze-location ──
+            // The gym domain previously ran a separate client-side engine
+            // (getLocationIntelligence + scoringEngine web worker) that produced
+            // numbers diverging from the ADK chat. Routing every domain through
+            // the centralized endpoint keeps the server's distance-weighted
+            // scoring + graceful-auth/blocklist filters AND guarantees the
+            // Intelligence Panel matches the chat for the same point/domain/radius.
+            const { intel, scores: centralScores } = await fetchCentralizedIntel(
+                analysisPos[0], analysisPos[1], searchRadius, domainToUse
+            );
+            realScores = centralScores;
+            currentTotalScore = realScores.total;
 
-                // USE WEB WORKER FOR SCORING
-                realScores = await calculateDomainScoresAsync(intel, domainToUse, searchRadius);
-                currentTotalScore = realScores.total;
+            setRealPOIs({
+                gyms: intel.competitors.places,
+                cafes: intel.infraSynergy.places,
+                corporates: intel.corporateOffices.places,
+                transit: intel.transitStations.places,
+                apartments: intel.apartments.places,
+                parks: []
+            });
 
-                setScores(realScores);
+            setScores(realScores);
 
-                if (effectiveCluster) {
-                    const opportunityScore = realScores.total / 100;
-                    const finalScore = opportunityScore;
-                    const demographicLoad = realScores.demographicLoad;
-                    const competitorDensity = intel.gyms.total;
-                    let growthRate = 0;
-                    if (intel.marketGap === 'UNTAPPED') growthRate = 0.15;
-                    else if (intel.marketGap === 'OPPORTUNITY') growthRate = 0.10;
-                    else if (intel.marketGap === 'COMPETITIVE') growthRate = 0.05;
-                    else growthRate = 0.02;
-                    if (demographicLoad > 70) growthRate += 0.03;
-                    if (intel.corporateOffices.total > 10) growthRate += 0.02;
-                    setWardScores(prev => ({ ...prev, [effectiveCluster]: { opportunityScore, finalScore, growthRate, demographicLoad, competitorDensity } }));
-                }
-
-                const recommendation = generateDataDrivenRecommendation(intel, realScores);
-                setAiInsight(recommendation);
-
-            } else {
-                // ── Use centralized /api/analyze-location endpoint ────────────
-                // This guarantees the Intelligence Panel shows the EXACT same
-                // scores and competitor count as the ADK Chat.
-                const { intel, scores: centralScores } = await fetchCentralizedIntel(
-                    analysisPos[0], analysisPos[1], searchRadius, domainToUse
-                );
-                realScores = centralScores;
-                currentTotalScore = realScores.total;
-
-                setRealPOIs({
-                    gyms: intel.competitors.places,
-                    cafes: intel.infraSynergy.places,
-                    corporates: intel.corporateOffices.places,
-                    transit: intel.transitStations.places,
-                    apartments: intel.apartments.places,
-                    parks: []
-                });
-
-                setScores(realScores);
-
-                if (effectiveCluster) {
-                    const opportunityScore = realScores.total / 100;
-                    const finalScore = opportunityScore;
-                    let growthRate = intel.marketGap === 'UNTAPPED' ? 0.15 :
-                        intel.marketGap === 'OPPORTUNITY' ? 0.10 :
-                            intel.marketGap === 'COMPETITIVE' ? 0.05 : 0.02;
-                    if (realScores.demographicLoad > 70) growthRate += 0.03;
-                    setWardScores(prev => ({ ...prev, [effectiveCluster]: { opportunityScore, finalScore, growthRate, demographicLoad: realScores.demographicLoad, competitorDensity: intel.competitors.total } }));
-                }
-
-                const recommendation = generateDomainRecommendation(intel, domainToUse);
-                setAiInsight(recommendation);
+            if (effectiveCluster) {
+                const opportunityScore = realScores.total / 100;
+                const finalScore = opportunityScore;
+                let growthRate = intel.marketGap === 'UNTAPPED' ? 0.15 :
+                    intel.marketGap === 'OPPORTUNITY' ? 0.10 :
+                        intel.marketGap === 'COMPETITIVE' ? 0.05 : 0.02;
+                if (realScores.demographicLoad > 70) growthRate += 0.03;
+                setWardScores(prev => ({ ...prev, [effectiveCluster]: { opportunityScore, finalScore, growthRate, demographicLoad: realScores.demographicLoad, competitorDensity: intel.competitors.total } }));
             }
+
+            const recommendation = generateDomainRecommendation(intel, domainToUse);
+            setAiInsight(recommendation);
 
             const currentCustomParams = customParamsRef.current;
             if (currentCustomParams.length > 0) {
