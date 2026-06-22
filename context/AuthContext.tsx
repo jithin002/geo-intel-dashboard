@@ -52,8 +52,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     
     const decoded = jwtDecode<GoogleUser>(credentialResponse.credential);
     
-    if (!decoded.email.endsWith('@econz.net')) {
-      throw new Error('Access restricted: Only @econz.net accounts are allowed.');
+    const domain = decoded.email.split('@')[1]?.toLowerCase() ?? '';
+    const allowed = domain === 'econz.net' || domain.endsWith('.econz.net');
+    if (!allowed) {
+      throw new Error('Access restricted: Only econz.net accounts are allowed.');
     }
     
     setUser(decoded);

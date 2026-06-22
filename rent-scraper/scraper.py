@@ -111,6 +111,17 @@ async def scrape_listings():
                 print("  [!] No cards found on this page. Stopping.")
                 break
 
+            # One-time debug: dump the first card's HTML on page 1 so the correct
+            # anchor selector can be pinpointed if listing_url comes back empty.
+            if page_num == 1:
+                try:
+                    debug_path = os.path.join(os.path.dirname(__file__), "data", "_debug_card.html")
+                    with open(debug_path, "w", encoding="utf-8") as df:
+                        df.write(await cards[0].inner_html())
+                    print(f"  [debug] First card HTML -> {debug_path}")
+                except Exception as e:
+                    print(f"  [debug] Could not dump card HTML: {e}")
+
             for i, card in enumerate(cards):
                 try:
                     # Title  (confirmed selector: H2.mb-srp__card--title)
@@ -150,14 +161,38 @@ async def scrape_listings():
                                 prop_type = ptype
                                 break
 
-                    # Listing URL
-                    link_el = await card.query_selector("a.mb-srp__card--anchor, a[href*='property']")
-                    href = (await link_el.get_attribute("href") or "") if link_el else ""
-                    listing_url = f"https://www.magicbricks.com{href}" if href.startswith("/") else href
+                    # Image — handle lazy-loaded data-src
+                    img_el = await card.query_selector("img.mb-srp__card--photo, img[data-src], img[src*='magicbricks']")
+                    image_url = ""
+                    if img_el:
+                        image_url = (await img_el.get_attribute("src")
+                                     or await img_el.get_attribute("data-src") or "")
 
-                    # Image
-                    img_el = await card.query_selector("img.mb-srp__card--photo, img[src*='magicbricks']")
-                    image_url = (await img_el.get_attribute("src") or "") if img_el else ""
+                    # Listing URL — MagicBricks cards have no <a href>; the link is
+                    # built in JS. We reconstruct it from the numeric property id.
+                    # Detail URL id param = hex("MB" + propertyId), e.g.
+                    #   83730743 -> "MB83730743" -> hex -> 4d423833373330373433
+                    prop_id = ""
+                    id_el = await card.query_selector("[id^='propertiesAction']")
+                    if id_el:
+                        raw_id = (await id_el.get_attribute("id")) or ""
+                        m = re.search(r"propertiesAction(\d+)", raw_id)
+                        if m:
+                            prop_id = m.group(1)
+                    if not prop_id and image_url:
+                        # fallback: image path .../<digits>_<n>_...
+                        m = re.search(r"/(\d{6,})_\d+_", image_url)
+                        if m:
+                            prop_id = m.group(1)
+
+                    listing_url = ""
+                    if prop_id:
+                        hex_id = ("MB" + prop_id).encode().hex()
+                        slug = re.sub(r"[^a-zA-Z0-9]+", "-", title).strip("-") or "commercial-property"
+                        listing_url = (
+                            f"https://www.magicbricks.com/propertyDetails/{slug}"
+                            f"&id={hex_id}&dynamicListing=N&budget=0&area=0&seats=0&isCoworkingSearch=Y"
+                        )
 
                     listing = {
                         "listing_id":    f"mb_p{page_num}_i{i}",
